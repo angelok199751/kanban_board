@@ -1,0 +1,5187 @@
+<script>
+(() => {
+'use strict';
+const $ = id => document.getElementById(id);
+const FILTERS = [
+['filterFlow', 'флоу', 'Все флоу'],
+['filterAssignee', 'исполнитель', 'Все исполнители'],
+['filterDeveloper', 'разраб', 'Все разработчики'],
+['filterCategory', 'категория', 'Все категории'],
+['filterVersion', 'версия', 'Все версии']
+];
+// Стиль пилюль по умолчанию для известных полей (пока цвет значения не назначен).
+const PILL_STYLES = {
+'статус': 'status', 'флоу': 'flow', 'категория': 'category',
+'исполнитель': 'assignee', 'разраб': 'developer',
+'версия': 'version', 'дата выкатки': 'date'
+};
+const pillStyle = key => PILL_STYLES[key] || 'generic';
+// Эти поля редактируются отдельно (шапка и основной текст).
+const SPECIAL_KEYS = ['задача', 'номер', 'коммент'];
+// Палитра значений: [ключ, название, цвет для точки на доске].
+const COLOR_LIST = [
+['red', 'Красный', '#f49aaa'],
+['orange', 'Оранжевый', '#f4c58b'],
+['yellow', 'Жёлтый', '#f0dc82'],
+['green', 'Зелёный', '#8fe0bd'],
+['blue', 'Синий', '#9bc5ff'],
+['purple', 'Фиолетовый', '#d0baff'],
+['pink', 'Розовый', '#f2b0d3'],
+['gray', 'Серый', '#b3b6c8']
+];
+const COLOR_HEX = Object.fromEntries(COLOR_LIST.map(c => [c[0], c[2]]));
+const COLORS = ['#b7a5ff','#83e5ed','#8fe0bd','#f4c58b','#f49aaa','#9bc5ff','#d0baff','#83e4d5'];
+const MONTHS = ['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
+const WEEKDAYS = ['Пн','Вт','Ср','Чт','Пт','Сб','Вс'];
+const MAX_RETRIES = 5;
+const FS_KEY = 'qaflow.editorFullscreen';
+const PROPS_KEY = 'qaflow.propsCollapsed';
+const VIEW_KEY = 'qaflow.activeView';
+const BOARD_UI_KEY = 'qaflow.boardUi';
+const EXPORT_KEY = 'qaflow.export';
+const SECTION_KEY = 'qaflow.activeSection';
+const SHOW_ARCHIVED_KEY = 'qaflow.showArchived';
+
+let sheetId = null;
+let sheetName = '';
+let schema = [];
+let tasks = [];
+let statuses = [];
+let dropdownOptions = {};
+let colors = {};        // { ключ свойства: { значение: цвет } }
+let lastSignature = '';
+let lastSyncAt = '';
+let boardUi = readBoardUi();   // личный вид доски на этом устройстве: свёрнутые столбцы и компактные карточки
+let propConfig = { order: [], hidden: [], titles: {}, types: {}, options: {} };   // настройки свойств листа
+let loading = false;
+let pending = 0;      // записей сейчас в пути
+let writeEpoch = 0;   // растёт при каждой записи: устаревшие загрузки отбрасываются
+let noticeTimer = null;
+let openMenu = null;
+let colorChain = Promise.resolve();
+let fullscreen = false;
+let propsCollapsed = false;
+let views = [];                 // сохранённые представления (с сервера)
+let activeViewId = 'all';
+let draft = { filters: { search: '', values: {}, text: {}, dates: {} }, sort: { key: '', dir: 'asc' } };
+let draftReady = false;         // черновик: фильтры и сортировка до сохранения в представление
+let modal = null;
+
+// Этап 5: рабочая область, доски и базы знаний.
+let workspace = { boards: [], knowledge: [] };
+let activeSection = { type: 'board', id: null };
+let knowledgeData = null;
+let knowledgeArticles = [];
+let knowledgeSearch = '';
+let showArchived = false;
+// Состояние загрузки рабочей области и защита от устаревших ответов сервера.
+let workspaceState = 'loading';   // loading | ready | error
+let workspaceError = '';
+let workspaceSeq = 0;             // растёт при каждом применении списка: старый ответ его не затрёт
+let workspaceRefreshing = false;
+let loadToken = 0;                // номер последнего запроса доски
+let knowledgeToken = 0;           // номер последнего запроса базы знаний
+let boardLoadedFor = null;        // sheetId, данные которого сейчас на экране
+let boardNeedsLoad = false;       // выбранная доска ещё не загружена
+
+const controls = new Map();
+const rich = $('taskComment');
+const editor = {
+open: false, mode: 'create', task: null, values: {}, initial: {},
+timer: null, retry: null, retries: 0,
+inFlight: false, closeRequested: false, requestId: '',
+linkForm: null, linkRange: null, linkAnchor: null
+};
+
+const knEditor = {
+open: false,
+mode: 'create',
+article: null,
+title: '',
+content: '',
+rev: 0,   // растёт при каждом вводе пользователя: по нему отличаем «текст не менялся» от «печатали во время запроса»
+inFlight: false,
+closeRequested: false,
+retries: 0,
+requestId: '',
+timer: null,
+retry: null,
+modal: null,
+titleEl: null,
+contentEl: null,
+statusEl: null,
+linkForm: null,
+linkRange: null,
+linkAnchor: null
+};
+
+/* ---------- Помощники ---------- */
+function esc(value) {
+return String(value ?? '').replace(/[&<>"']/g, ch => ({
+'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'
+})[ch]);
+}
+// Ссылки. Открываем только http(s): так из таблицы в браузер не попадёт javascript: и подобное.
+// Правила совпадают с normalizeUrl_ в Code.gs: адрес без протокола получает https:/.
+const HTTP_URL_RE = /^https?:\/\/\S+$/i;
+function normalizeUrlInput(text) {
+const s = String(text ?? '').trim();
+if (!s) return '';
+if (HTTP_URL_RE.test(s)) return s;
+if (/^[^\s@\/:]+(\.[^\s@\/:]+)+(:\d+)?([\/?#]\S*)?$/.test(s) && /\.[A-Za-z]{2,}(?=[:\/?#]|$)/.test(s)) return 'https:\u002f\u002f' + s;
+return null;
+}
+// Готовый адрес для href либо пустая строка, если значение не ссылка.
+function safeHref(value) {
+const s = String(value ?? '').trim();
+if (!HTTP_URL_RE.test(s)) return '';
+try { return new URL(s).href; } catch (e) { return ''; }
+}
+function gs(name, ...args) {
+return new Promise((resolve, reject) => {
+google.script.run
+.withSuccessHandler(resolve)
+.withFailureHandler(reject)[name](...args);
+});
+}
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+const timeNow = () => new Date().toLocaleTimeString('ru-RU', { hour:'2-digit', minute:'2-digit' });
+const errText = error => error?.message || String(error);
+const pad2 = n => String(n).padStart(2, '0');
+const isIso = v => /^\d{4}-\d{2}-\d{2}$/.test(v || '');
+const isoOf = (y, m, d) => `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+const fmtDate = v => isIso(v) ? `${v.slice(8, 10)}.${v.slice(5, 7)}.${v.slice(0, 4)}` : (v || '');
+function showNotice(message, error = false) {
+const el = $('notice');
+el.textContent = message;
+el.className = 'notice show' + (error ? ' error' : '');
+clearTimeout(noticeTimer);
+noticeTimer = setTimeout(() => { el.className = 'notice'; }, 4000);
+}
+function setSync(message, state = '') {
+const el = $('syncLabel');
+el.textContent = message;
+el.className = 'sync-label' + (state ? ' ' + state : '');
+}
+function handleError(error) {
+setSync('Ошибка синхронизации', 'error');
+showNotice(errText(error), true);
+}
+function beginWrite() {
+pending++;
+writeEpoch++;
+setSync('Сохранение…', 'saving');
+}
+function endWrite(failed = false) {
+pending = Math.max(0, pending - 1);
+if (failed) setSync('Ошибка сохранения', 'error');
+else if (pending === 0) setSync('Сохранено в ' + timeNow(), 'ok');
+}
+
+/* ---------- Форматированный текст ---------- */
+// Хранение: без форматирования — обычный текст; с форматированием — HTML
+// из белого списка тегов (b, i, u, s, ul, ol, li, div, br) без атрибутов.
+// Серверная очистка в Code.gs работает по тем же правилам.
+const HAS_TAGS = /<\/?(b|strong|i|em|u|s|strike|del|ul|ol|li|br|div|p|a)\b[^>]*>/i;
+const RICH_MAP = {
+B:'b', STRONG:'b', I:'i', EM:'i', U:'u', S:'s', STRIKE:'s', DEL:'s',
+UL:'ul', OL:'ol', LI:'li', DIV:'div', P:'div'
+};
+const isRichKey = key => schema.some(p => p.key === key && p.type === 'longtext');
+// Пробелы не заменяем на &nbsp;: поля описания работают в режиме pre-wrap,
+// поэтому обычные пробелы сохраняются, а текст нормально переносится по словам.
+function escText(text) {
+return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+.replace(new RegExp(String.fromCharCode(160), 'g'), ' ');
+}
+
+const escAttr = s => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const MAX_LINK_LENGTH = 2000;
+const CTRL_CHARS_RE = new RegExp('[' + String.fromCharCode(0) + '-' + String.fromCharCode(31) + String.fromCharCode(127) + ']');
+// Адрес ссылки или null. Правила те же, что в Code.gs: только http(s), адрес без протокола получает https:/.
+function linkUrlOrNull(value) {
+const s = String(value ?? '').trim();
+if (!s || s.length > MAX_LINK_LENGTH || CTRL_CHARS_RE.test(s)) return null;
+return normalizeUrlInput(s) || null;
+}
+const safeLinkHref = raw => linkUrlOrNull(raw) || '';
+// При показе ссылки открываются в новой вкладке и не открывают карточку задачи.
+function decorateLinks(html) {
+return html.replace(/<a href=/g, '<a target="_blank" rel="noopener noreferrer" draggable="false" data-link href=');
+}
+// Разбирает HTML в неактивном шаблоне и собирает заново только разрешённые теги.
+function toSafeHtml(html) {
+const tpl = document.createElement('template');
+tpl.innerHTML = html;
+const walk = (node, inLink) => {
+let out = '';
+node.childNodes.forEach(n => {
+if (n.nodeType === 3) {
+out += escText(n.nodeValue);
+} else if (n.nodeType === 1) {
+const tag = n.tagName;
+if (tag === 'SCRIPT' || tag === 'STYLE') return;
+if (tag === 'BR') { out += '<br>'; return; }
+if (tag === 'A') {
+const href = inLink ? '' : safeLinkHref(n.getAttribute('href'));
+const inner = walk(n, true);
+out += href ? `<a href="${escAttr(href)}">${inner}</a>` : inner;
+return;
+}
+const mapped = RICH_MAP[tag];
+const inner = walk(n, inLink);
+out += mapped ? `<${mapped}>${inner}</${mapped}>` : inner;
+}
+});
+return out;
+};
+return walk(tpl.content, false);
+}
+function simplifyHtml(html) {
+if (/<\/?(?:b|i|u|s|ul|ol|li)>|<a href=|<\/a>/.test(html)) return html;
+let text = html
+.replace(/<div><br><\/div>/g, '<div></div>')
+.replace(/<div>/g, '\n')
+.replace(/<\/div>/g, '')
+.replace(/<br>/g, '\n')
+.replace(/&nbsp;/g, ' ')
+.replace(/&lt;/g, '<')
+.replace(/&gt;/g, '>')
+.replace(/&amp;/g, '&');
+text = text.replace(/^\n/, '').replace(/\n+$/, '');
+if (/[<>]/.test(text)) return HAS_TAGS.test(html) ? html : '<div>' + html + '</div>';
+return text;
+}
+// Каноническая форма значения: именно так оно хранится в таблице.
+function richCanon(value) {
+const s = String(value ?? '');
+if (!s.trim()) return '';
+if (!HAS_TAGS.test(s)) return s;
+const html = toSafeHtml(s);
+const visibleEmpty = !/<li>/.test(html) &&
+html.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim() === '';
+return visibleEmpty ? '' : simplifyHtml(html);
+}
+// HTML для показа (редактор и карточка на доске).
+function richToHtml(value) {
+const s = String(value ?? '');
+if (!s.trim()) return '';
+if (HAS_TAGS.test(s)) return decorateLinks(toSafeHtml(s));
+return s.replace(/\r\n?/g, '\n').split('\n')
+.map(line => line ? `<div>${escText(line)}</div>` : '<div><br></div>')
+.join('');
+}
+function richPlain(value) {
+const s = String(value ?? '');
+return HAS_TAGS.test(s)
+? toSafeHtml(s).replace(/<\/(div|li)>|<br>/g, ' ').replace(/<[^>]*>/g, '')
+.replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+: s;
+}
+// Сравнение значений с учётом того, что у форматированного текста
+// одно и то же содержимое может быть записано по-разному.
+function same(key, a, b) {
+const x = a ?? '';
+const y = b ?? '';
+if (x === y) return true;
+return isRichKey(key) && richCanon(x) === richCanon(y);
+}
+
+/* ---------- Цвета значений ---------- */
+const colorOf = (key, value) => {
+const map = colors[key];
+return map && Object.prototype.hasOwnProperty.call(map, value) ? map[value] : '';
+};
+// Назначенный цвет перекрывает цвет поля по умолчанию.
+function pillClass(key, value) {
+const color = colorOf(key, value);
+return color ? 'c-' + color : 'pill-' + pillStyle(key);
+}
+function applyColor(key, value, color) {
+if (color) {
+if (!colors[key]) colors[key] = {};
+colors[key][value] = color;
+} else if (colors[key]) {
+delete colors[key][value];
+if (!Object.keys(colors[key]).length) delete colors[key];
+}
+}
+function repaintColors(key) {
+renderBoard();
+renderPropsSummary();
+const p = schema.find(item => item.key === key);
+if (p && controls.has(key) && editor.open) renderPicker(p);
+if (openMenu && openMenu.key === key) {
+openMenu.menu.querySelectorAll('[data-row]').forEach(row => {
+const pill = row.querySelector('.value-pill');
+if (pill) pill.className = 'value-pill ' + pillClass(key, row.dataset.row);
+});
+}
+}
+function setValueColor(key, value, color) {
+const previous = colorOf(key, value);
+if (previous === color) return;
+applyColor(key, value, color);
+repaintColors(key);
+beginWrite();
+colorChain = colorChain.catch(() => {})
+.then(() => gs('saveValueColor', sheetId, key, value, color))
+.then(
+() => { endWrite(); },
+error => {
+endWrite(true);
+if (colorOf(key, value) === color) {
+applyColor(key, value, previous);
+repaintColors(key);
+}
+showNotice(errText(error), true);
+}
+);
+}
+
+/* ---------- Загрузка доски ---------- */
+function attachBase(task) {
+task._base = {};
+schema.forEach(p => { task._base[p.key] = task[p.key] ?? ''; });
+return task;
+}
+function editorBusy() {
+return editor.open && (editor.inFlight || isDirty());
+}
+// force: загрузка после переключения доски. Она заменяет любой запрос, который ещё в пути,
+// иначе ответ по прежней доске подменял бы выбранную.
+function loadBoard(manual = false, force = false) {
+if (loading && !force) return;
+if (pending > 0 || editor.inFlight) {
+if (manual) showNotice('Изменения ещё сохраняются — обнови чуть позже.');
+// Выбранная доска ещё не показана: повторяем, как только запись завершится.
+if (boardNeedsLoad) setTimeout(() => loadBoard(false, true), 400);
+return;
+}
+loading = true;
+const token = ++loadToken;
+const requestedId = sheetId;
+const epoch = writeEpoch;
+setSync('Синхронизация…', 'saving');
+return gs('getBoardData', sheetId)
+.then(data => {
+// Пришёл ответ на устаревший запрос (доску уже переключили): игнорируем.
+if (token !== loadToken) return;
+loading = false;
+if (activeSection.type !== 'board') return;
+if (requestedId !== null && requestedId !== undefined && Number(data.sheetId) !== Number(requestedId)) return;
+// Пока шла загрузка, что-то сохранялось: ответ может быть устаревшим.
+if (epoch !== writeEpoch || pending > 0) {
+if (boardNeedsLoad) setTimeout(() => loadBoard(false, true), 400);
+return;
+}
+sheetId = data.sheetId;
+sheetName = data.sheetName || '';
+boardLoadedFor = data.sheetId;
+boardNeedsLoad = false;
+const signature = JSON.stringify([
+data.schema, data.tasks, data.statuses, data.dropdownOptions, data.colors, data.views, data.propConfig
+]);
+if (signature !== lastSignature) {
+lastSignature = signature;
+schema = data.schema || [];
+statuses = data.statuses || [];
+dropdownOptions = data.dropdownOptions || {};
+colors = data.colors || {};
+propConfig = data.propConfig || propConfig;
+tasks = (data.tasks || []).map(attachBase);
+// Несохранённые правки фильтров пользователя не затираем обновлением.
+let keepDraft = draftReady && isDraftDirty();
+views = (data.views || []).map(fromServerView);
+if (!allViews().some(v => v.id === activeViewId)) {
+activeViewId = 'all';
+keepDraft = false;
+}
+if (!keepDraft) initDraft();
+renderAll();
+mergeIntoEditor();
+}
+lastSyncAt = timeNow();
+setSync('Обновлено в ' + lastSyncAt, 'ok');
+})
+.catch(error => {
+if (token !== loadToken) return;
+loading = false;
+handleError(error);
+// Доска ещё ни разу не загружалась: вместо вечного «Загружаем…» показываем ошибку и повтор.
+if (boardLoadedFor !== requestedId) {
+$('board').innerHTML = `<div class="loading">Не удалось загрузить доску: ${esc(errText(error))} <button class="btn small" type="button" data-board-retry>Повторить</button></div>`;
+}
+});
+}
+
+/* ---------- Представления: состояние ---------- */
+// Представление хранит только настройки отображения: фильтры, столбцы,
+// поля карточки, сортировку. Задачи у всех представлений одни и те же.
+// Фильтры и сортировка правятся в «черновике» и сохраняются явно;
+// столбцы и поля карточки сохраняются из окна «Настроить вид».
+//
+// Внутри клиента фильтры хранятся как { search, values, text, dates },
+// на сервере — в каноническом виде (см. Code.gs). Перевод между ними
+// делают fromServerView / toServerView.
+const EMPTY_TOKEN = '__empty__';   // «не заполнено» в фильтре по значениям
+const NO_STATUS = 'Без статуса';
+const DEFAULT_CARD_PROPS = ['флоу', 'категория', 'версия', 'дата выкатки', 'коммент', 'исполнитель', 'разраб'];
+const CARD_BOTTOM = ['исполнитель', 'разраб'];
+const TYPE_LABELS = { select: 'Список', date: 'Дата', text: 'Текст', url: 'Ссылка', longtext: 'Длинный текст' };
+const clone = value => JSON.parse(JSON.stringify(value));
+const isObj = v => !!v && typeof v === 'object' && !Array.isArray(v);
+const newViewId = () => 'v' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+const blankFilters = () => ({ search: '', values: {}, text: {}, dates: {} });
+function normFilters(f) {
+const src = isObj(f) ? f : {};
+return {
+search: String(src.search || ''),
+values: isObj(src.values) ? src.values : {},
+text: isObj(src.text) ? src.text : {},
+dates: isObj(src.dates) ? src.dates : {}
+};
+}
+// Приводит представление в клиентском формате к цельному виду.
+function fixView(raw) {
+const v = raw || {};
+const c = v.columns || {};
+const s = v.sort || {};
+return {
+id: String(v.id || ''),
+name: String(v.name || 'Без названия'),
+pos: v.pos == null || !Number.isFinite(Number(v.pos)) ? undefined : Number(v.pos),
+virtual: !!v.virtual,
+filters: normFilters(v.filters),
+columns: {
+order: Array.isArray(c.order) ? c.order : [],
+hidden: Array.isArray(c.hidden) ? c.hidden : []
+},
+props: Array.isArray(v.props) ? v.props : null,
+sort: { key: s.key || '', dir: s.dir === 'desc' ? 'desc' : 'asc' }
+};
+}
+// Сервер отдаёт: filters = { "ключ": ["значение"] | { from, to } },
+// search и text — на верхнем уровне, cardProps вместо props, sort может быть null.
+function fromServerView(raw) {
+const v = raw || {};
+const src = isObj(v.filters) ? v.filters : {};
+const filters = blankFilters();
+filters.search = String(v.search || '');
+if (isObj(v.text)) filters.text = { ...v.text };
+Object.keys(src).forEach(key => {
+const f = src[key];
+if (Array.isArray(f)) filters.values[key] = f.slice();
+else if (isObj(f)) filters.dates[key] = { from: f.from || '', to: f.to || '' };
+});
+return fixView({
+id: v.id, name: v.name, pos: v.pos, filters,
+columns: v.columns, props: v.cardProps, sort: v.sort
+});
+}
+function toServerView(view) {
+const f = view.filters;
+const filters = {};
+Object.keys(f.values).forEach(key => {
+const list = (f.values[key] || []).filter(x => x !== '');
+if (list.length) filters[key] = list;
+});
+Object.keys(f.dates).forEach(key => {
+const d = f.dates[key] || {};
+if (d.from || d.to) filters[key] = { from: d.from || '', to: d.to || '' };
+});
+const out = {
+id: view.id,
+name: view.name,
+filters,
+columns: view.columns,
+sort: view.sort.key ? { key: view.sort.key, dir: view.sort.dir } : null,
+cardProps: view.props
+};
+// pos сохраняем: без него сервер каждый раз ставит «сейчас», и вкладка прыгает в конец.
+if (view.pos !== undefined) out.pos = view.pos;
+const search = String(f.search || '').trim();
+if (search) out.search = search;
+const text = {};
+Object.keys(f.text).forEach(key => {
+const s = String(f.text[key] || '').trim();
+if (s) text[key] = s;
+});
+if (Object.keys(text).length) out.text = text;
+return out;
+}
+// «Все задачи» есть всегда: пока её не сохранили, она виртуальная.
+function allViews() {
+const all = views.find(v => v.id === 'all') || fixView({ id: 'all', name: 'Все задачи', virtual: true });
+return [all, ...views.filter(v => v.id !== 'all')];
+}
+function currentView() {
+const list = allViews();
+return list.find(v => v.id === activeViewId) || list[0];
+}
+function viewStorageKey(id) {
+return VIEW_KEY + '.' + (id || 'default');
+}
+function saveActiveLocal() {
+try { localStorage.setItem(viewStorageKey(sheetId), activeViewId); } catch (e) { /* не критично */ }
+}
+function loadActiveLocal(id) {
+try { return localStorage.getItem(viewStorageKey(id)) || 'all'; } catch (e) { return 'all'; }
+}
+function initDraft() {
+const v = currentView();
+draft = { filters: clone(v.filters), sort: clone(v.sort) };
+draftReady = true;
+}
+// Каноническая запись фильтров и сортировки: по ней понимаем, менялся ли черновик.
+function canonState(filters, sort) {
+const out = {
+search: String(filters.search || '').trim(),
+values: {}, text: {}, dates: {},
+sort: { key: sort.key || '', dir: sort.key ? sort.dir : 'asc' }
+};
+Object.keys(filters.values || {}).sort().forEach(key => {
+const list = [...new Set((filters.values[key] || []).filter(x => x !== ''))].sort();
+if (list.length) out.values[key] = list;
+});
+Object.keys(filters.text || {}).sort().forEach(key => {
+const s = String(filters.text[key] || '').trim();
+if (s) out.text[key] = s;
+});
+Object.keys(filters.dates || {}).sort().forEach(key => {
+const d = filters.dates[key] || {};
+if (d.from || d.to) out.dates[key] = { from: d.from || '', to: d.to || '' };
+});
+return JSON.stringify(out);
+}
+function isDraftDirty() {
+if (!draftReady) return false;
+const v = currentView();
+return canonState(draft.filters, draft.sort) !== canonState(v.filters, v.sort);
+}
+const hasProp = key => schema.some(p => p.key === key);
+function activeFilterCount() {
+const f = draft.filters;
+return Object.keys(f.values).filter(k => hasProp(k) && f.values[k].length).length
++ Object.keys(f.text).filter(k => hasProp(k) && String(f.text[k]).trim()).length
++ Object.keys(f.dates).filter(k => hasProp(k) && (f.dates[k].from || f.dates[k].to)).length;
+}
+
+/* ---------- Фильтрация, сортировка, столбцы ---------- */
+// Одно условие показа. Внутри свойства значения объединяются по «или»,
+// разные свойства — по «и». Используется и доской, и экспортом.
+function matchTask(task, f) {
+const query = String(f.search || '').trim().toLocaleLowerCase('ru');
+if (query) {
+const searchable = Object.keys(task)
+.filter(key => !key.startsWith('_'))
+.map(key => isRichKey(key) ? richPlain(task[key]) : (task[key] || ''))
+.join(' ')
+.toLocaleLowerCase('ru');
+if (!searchable.includes(query)) return false;
+}
+for (const key of Object.keys(f.values)) {
+const list = f.values[key];
+if (!list.length || !hasProp(key)) continue;
+const value = String(task[key] || '').trim();
+if (!list.some(x => x === EMPTY_TOKEN ? value === '' : x === value)) return false;
+}
+for (const key of Object.keys(f.text)) {
+const needle = String(f.text[key] || '').trim().toLocaleLowerCase('ru');
+if (!needle || !hasProp(key)) continue;
+const hay = isRichKey(key) ? richPlain(task[key]) : String(task[key] || '');
+if (!hay.toLocaleLowerCase('ru').includes(needle)) return false;
+}
+for (const key of Object.keys(f.dates)) {
+const range = f.dates[key] || {};
+if (!(range.from || range.to) || !hasProp(key)) continue;
+const d = task[key];
+if (!isIso(d)) return false;
+if (range.from && d < range.from) return false;
+if (range.to && d > range.to) return false;
+}
+return true;
+}
+const getFilteredTasks = () => tasks.filter(t => matchTask(t, draft.filters));
+// Пустые значения всегда внизу, независимо от направления.
+function sortTasks(list) {
+const { key, dir } = draft.sort;
+if (!key || !hasProp(key)) return list;
+const mul = dir === 'desc' ? -1 : 1;
+const text = t => String(t[key] ?? '').trim();
+return list.slice().sort((a, b) => {
+const x = text(a);
+const y = text(b);
+if (!x && !y) return 0;
+if (!x) return 1;
+if (!y) return -1;
+return x.localeCompare(y, 'ru', { numeric: true }) * mul;
+});
+}
+// Статусы доски: из списка + «Без статуса», если такие задачи есть.
+function allStatuses() {
+const list = statuses.slice();
+if (tasks.some(t => !String(t['статус'] || '').trim()) && !list.includes(NO_STATUS)) list.push(NO_STATUS);
+return list;
+}
+// Порядок и видимость столбцов-статусов. Новые статусы из таблицы
+// появляются в конце видимых, скрытые остаются скрытыми.
+function laneOrder(view) {
+const known = allStatuses();
+const hidden = new Set(view.columns.hidden);
+const order = view.columns.order.filter(s => known.includes(s));
+const ordered = [...order, ...known.filter(s => !order.includes(s))];
+return {
+order: ordered,
+active: ordered.filter(s => !hidden.has(s)),
+hidden: ordered.filter(s => hidden.has(s))
+};
+}
+function defaultCardProps() {
+return schema.map(p => p.key).filter(k => DEFAULT_CARD_PROPS.includes(k));
+}
+function cardProps(view) {
+const present = schema.map(p => p.key);
+const keys = Array.isArray(view.props) ? view.props : DEFAULT_CARD_PROPS;
+return new Set(keys.filter(k => present.includes(k)));
+}
+function laneColor(status, index) {
+const assigned = colorOf('статус', status);
+return assigned ? COLOR_HEX[assigned] : COLORS[index % COLORS.length];
+}
+
+/* ---------- Быстрые фильтры в шапке ---------- */
+function populateFilters() {
+FILTERS.forEach(([id, field, label]) => {
+const select = $(id);
+// Быстрый фильтр показывается только для столбца, который есть в таблице.
+select.hidden = !schema.some(p => p.key === field);
+select.innerHTML = '';
+select.appendChild(new Option(label, ''));
+// Служебный пункт «Выбрано: N», когда в панели фильтров отмечено несколько значений.
+const multi = new Option('', '__multi');
+multi.hidden = true;
+select.appendChild(multi);
+const values = field === 'версия'
+? [...new Set(tasks.map(t => String(t[field] || '').trim()).filter(Boolean))]
+: (dropdownOptions[field] || []);
+[...values].sort((a, b) => a.localeCompare(b, 'ru', { numeric: true })).forEach(value => {
+select.appendChild(new Option(value, value));
+});
+});
+syncQuickSelects();
+}
+function syncQuickSelects() {
+FILTERS.forEach(([id, field, label]) => {
+const select = $(id);
+const list = draft.filters.values[field] || [];
+const multi = [...select.options].find(o => o.value === '__multi');
+if (list.length > 1) {
+const name = label.replace(/^Все /, '');
+if (multi) multi.textContent = name.charAt(0).toUpperCase() + name.slice(1) + ': ' + list.length;
+select.value = '__multi';
+} else if (list.length === 1) {
+if (![...select.options].some(o => o.value === list[0])) {
+select.appendChild(new Option(list[0] === EMPTY_TOKEN ? 'Не заполнено' : list[0], list[0]));
+}
+select.value = list[0];
+} else {
+select.value = '';
+}
+});
+}
+
+/* ---------- Панель представлений ---------- */
+function renderViewBar() {
+const dirty = isDraftDirty();
+$('viewTabs').innerHTML = allViews().map(v => {
+const active = v.id === activeViewId;
+return `
+<div class="view-chip${active ? ' active' : ''}">
+<button class="view-tab" type="button" role="tab" aria-selected="${active}" data-view="${esc(v.id)}">${esc(v.name)}${active && dirty ? '<span class="dirty-dot" title="Есть несохранённые изменения"></span>' : ''}</button>
+${active ? '<button class="view-more" type="button" data-view-menu aria-haspopup="menu" aria-label="Действия с представлением" title="Действия с представлением">⋯</button>' : ''}
+</div>
+`;
+}).join('') + '<button class="view-chip add" type="button" data-add-view>＋ Представление</button>';
+}
+function renderSortControls() {
+const select = $('sortKey');
+const sortable = schema.filter(p => p.type !== 'longtext');
+const keys = sortable.map(p => p.key);
+select.innerHTML = '<option value="">Без сортировки (как в таблице)</option>' +
+sortable.map(p => `<option value="${esc(p.key)}">Сортировка: ${esc(p.title)}</option>`).join('');
+select.value = keys.includes(draft.sort.key) ? draft.sort.key : '';
+const button = $('sortDir');
+const desc = draft.sort.dir === 'desc';
+button.textContent = desc ? '↓' : '↑';
+button.title = desc ? 'По убыванию' : 'По возрастанию';
+button.disabled = !select.value;
+}
+function renderFilterBadge() {
+const count = activeFilterCount();
+const badge = $('filtersBadge');
+badge.textContent = count;
+badge.hidden = !count;
+}
+function renderDraftBar() {
+const dirty = isDraftDirty();
+$('draftBar').hidden = !dirty;
+if (dirty) {
+$('draftText').textContent =
+`Фильтры или сортировка изменены — представление «${currentView().name}» ещё не обновлено.`;
+}
+}
+// Полная перерисовка: смена представления, обновление данных, сохранение.
+function renderAll() {
+renderViewBar();
+renderSortControls();
+$('search').value = draft.filters.search || '';
+populateFilters();
+renderFilterBadge();
+renderDraftBar();
+renderBoard();
+}
+// Лёгкая перерисовка: изменился только черновик.
+function refreshView() {
+renderBoard();
+renderViewBar();
+renderFilterBadge();
+renderDraftBar();
+}
+
+/* ---------- Модальные окна ---------- */
+function showModal({ title, width = 460, body = '', actions = [] }) {
+if (modal) modal.close(undefined);
+const overlay = $('modalOverlay');
+const box = $('modalBox');
+box.style.width = `min(${width}px,100%)`;
+box.innerHTML = `
+<div class="modal-head">
+<div class="modal-title" id="modalTitle">${esc(title)}</div>
+<button class="icon-btn" type="button" data-modal-close aria-label="Закрыть">✕</button>
+</div>
+<div class="modal-body">${body}</div>
+<div class="modal-foot">${actions.map((a, i) =>
+`<button type="button" class="btn${a.kind ? ' ' + a.kind : ''}" data-action="${i}">${esc(a.label)}</button>`
+).join('')}</div>
+`;
+const bodyEl = box.querySelector('.modal-body');
+const foot = box.querySelector('.modal-foot');
+let finish;
+let closed = false;
+const promise = new Promise(resolve => { finish = resolve; });
+const close = value => {
+if (closed) return;
+closed = true;
+overlay.classList.remove('open');
+overlay.setAttribute('aria-hidden', 'true');
+box.innerHTML = '';
+modal = null;
+finish(value);
+};
+const setBusy = busy => foot.querySelectorAll('button').forEach(b => { b.disabled = busy; });
+foot.addEventListener('click', async event => {
+const button = event.target.closest('[data-action]');
+if (!button) return;
+const action = actions[Number(button.dataset.action)];
+if (!action.onClick) { close(action.value); return; }
+setBusy(true);
+try {
+const result = await action.onClick();
+if (result !== false) {
+close(result === undefined ? action.value : result);
+return;
+}
+} catch (error) {
+showNotice(errText(error), true);
+}
+if (!closed) setBusy(false);
+});
+box.querySelector('[data-modal-close]').addEventListener('click', () => close(undefined));
+overlay.classList.add('open');
+overlay.setAttribute('aria-hidden', 'false');
+modal = { close, box };
+return { body: bodyEl, box, close, promise };
+}
+function askName(title, initial = '', okLabel = 'Сохранить', maxLength = 40) {
+const m = showModal({
+title,
+width: 400,
+body: `<label class="modal-label" for="modalName">Название</label>
+<input id="modalName" class="field" maxlength="${maxLength}" autocomplete="off" value="${esc(initial)}">`,
+actions: [
+{ label: 'Отмена', value: null },
+{
+label: okLabel, kind: 'primary', value: null,
+onClick: () => {
+const name = m.body.querySelector('#modalName').value.trim();
+if (!name) { showNotice('Введи название.', true); return false; }
+return name;
+}
+}
+]
+});
+const input = m.body.querySelector('#modalName');
+input.addEventListener('keydown', event => {
+if (event.key === 'Enter') {
+event.preventDefault();
+m.box.querySelector('.btn.primary').click();
+}
+});
+input.focus();
+input.select();
+return m.promise;
+}
+function confirmDialog(title, text, okLabel, danger = false) {
+return showModal({
+title,
+width: 420,
+body: `<p class="modal-text">${esc(text)}</p>`,
+actions: [
+{ label: 'Отмена', value: false },
+{ label: okLabel, kind: danger ? 'danger' : 'primary', value: true }
+]
+}).promise.then(Boolean);
+}
+
+/* ---------- Операции с представлениями ---------- */
+function persistView(view) {
+beginWrite();
+return gs('saveView', sheetId, toServerView(view)).then(
+res => {
+endWrite();
+views = (res.views || []).map(fromServerView);
+},
+error => {
+endWrite(true);
+throw error;
+}
+);
+}
+async function saveDraftToView() {
+const view = clone(currentView());
+view.filters = clone(draft.filters);
+view.sort = clone(draft.sort);
+try {
+await persistView(view);
+initDraft();
+renderAll();
+showNotice('Представление «' + view.name + '» сохранено');
+return true;
+} catch (error) {
+showNotice(errText(error), true);
+return false;
+}
+}
+async function createView(name, base) {
+const view = fixView({ ...clone(base), id: newViewId(), name, pos: undefined, virtual: false });
+try {
+await persistView(view);
+activeViewId = view.id;
+saveActiveLocal();
+initDraft();
+renderAll();
+showNotice('Создано представление «' + name + '»');
+} catch (error) {
+showNotice(errText(error), true);
+}
+}
+function askSwitch() {
+return showModal({
+title: 'Есть несохранённые изменения',
+width: 420,
+body: `<p class="modal-text">Фильтры или сортировка в представлении «${esc(currentView().name)}» изменены. Сохранить их?</p>`,
+actions: [
+{ label: 'Отмена', value: null },
+{ label: 'Не сохранять', value: 'discard' },
+{ label: 'Сохранить', kind: 'primary', value: 'save' }
+]
+}).promise;
+}
+// Перед уходом из представления спрашиваем, что делать с черновиком.
+async function guardDraft() {
+if (!isDraftDirty()) return true;
+const choice = await askSwitch();
+if (!choice) return false;
+if (choice === 'save') return saveDraftToView();
+return true;
+}
+async function selectView(id) {
+if (id === activeViewId) return;
+if (!(await guardDraft())) return;
+activeViewId = id;
+saveActiveLocal();
+initDraft();
+renderAll();
+}
+async function addView() {
+if (!(await guardDraft())) return;
+const name = await askName('Новое представление', '', 'Создать');
+if (!name) return;
+await createView(name, { filters: blankFilters(), sort: { key: '', dir: 'asc' } });
+}
+async function saveAsNew() {
+const name = await askName('Сохранить как новое представление', currentView().name + ' (копия)', 'Создать');
+if (!name) return;
+const v = currentView();
+await createView(name, { filters: draft.filters, sort: draft.sort, columns: v.columns, props: v.props });
+}
+async function renameCurrentView() {
+const view = currentView();
+const name = await askName('Переименовать представление', view.name);
+if (!name || name === view.name) return;
+const next = clone(view);
+next.name = name;
+try {
+await persistView(next);
+renderViewBar();
+renderDraftBar();
+showNotice('Представление переименовано');
+} catch (error) {
+showNotice(errText(error), true);
+}
+}
+async function deleteCurrentView() {
+const view = currentView();
+const isDefault = view.id === 'all';
+if (isDefault && view.virtual) {
+showNotice('В «Все задачи» ещё нет сохранённых настроек.');
+return;
+}
+const ok = await confirmDialog(
+isDefault ? 'Сбросить настройки?' : 'Удалить представление?',
+isDefault
+? 'Столбцы, фильтры и сортировка «Все задачи» вернутся к исходным. Задачи в таблице не изменятся.'
+: `Представление «${view.name}» будет удалено. Задачи в таблице не изменятся.`,
+isDefault ? 'Сбросить' : 'Удалить',
+true
+);
+if (!ok) return;
+beginWrite();
+try {
+const res = await gs('deleteView', sheetId, view.id);
+endWrite();
+views = (res.views || []).map(fromServerView);
+activeViewId = 'all';
+saveActiveLocal();
+initDraft();
+renderAll();
+showNotice(isDefault ? 'Настройки сброшены' : 'Представление удалено');
+} catch (error) {
+endWrite(true);
+showNotice(errText(error), true);
+}
+}
+function openViewMenu(trigger) {
+if (openMenu && openMenu.key === '__viewmenu') {
+closeMenu();
+return;
+}
+closeMenu();
+const isDefault = currentView().id === 'all';
+const menu = document.createElement('div');
+menu.className = 'pill-menu view-menu';
+menu.setAttribute('role', 'menu');
+menu.innerHTML = `
+<button class="menu-item" type="button" role="menuitem" data-vm="rename">Переименовать</button>
+<button class="menu-item" type="button" role="menuitem" data-vm="saveas">Сохранить как новое…</button>
+<button class="menu-item danger" type="button" role="menuitem" data-vm="delete">${isDefault ? 'Сбросить настройки' : 'Удалить представление'}</button>
+`;
+menu.addEventListener('click', event => {
+const item = event.target.closest('[data-vm]');
+if (!item) return;
+closeMenu();
+({ rename: renameCurrentView, saveas: saveAsNew, delete: deleteCurrentView })[item.dataset.vm]();
+});
+document.body.appendChild(menu);
+placeFloating(menu, trigger);
+openMenu = { key: '__viewmenu', menu, trigger };
+}
+
+/* ---------- Этап 5: рабочая область ---------- */
+function saveActiveSection() {
+try { localStorage.setItem(SECTION_KEY, JSON.stringify(activeSection)); } catch (e) { /* не критично */ }
+}
+function readActiveSection() {
+try {
+const raw = JSON.parse(localStorage.getItem(SECTION_KEY) || 'null');
+if (!raw || typeof raw !== 'object') return null;
+if (raw.type !== 'board' && raw.type !== 'knowledge') return null;
+if (!Number.isFinite(Number(raw.id))) return null;
+return { type: raw.type, id: Number(raw.id) };
+} catch (e) {
+return null;
+}
+}
+function findWorkspaceItem(type, id) {
+const list = type === 'knowledge' ? (workspace.knowledge || []) : (workspace.boards || []);
+return list.find(item => item.id === Number(id)) || null;
+}
+function firstActiveBoard() {
+return (workspace.boards || []).find(b => !b.archived) || (workspace.boards || [])[0] || null;
+}
+function firstActiveKnowledge() {
+return (workspace.knowledge || []).find(k => !k.archived) || (workspace.knowledge || [])[0] || null;
+}
+const SIDEBAR_KEY = 'qaflow.sidebarCollapsed';
+const desktopMedia = window.matchMedia('(min-width: 981px)');
+function isDesktopLayout() {
+return desktopMedia.matches;
+}
+function isSidebarCollapsed() {
+return document.documentElement.classList.contains('sidebar-collapsed');
+}
+// Подпись и aria-expanded кнопки ☰ соответствуют тому, открыта ли панель сейчас.
+function syncSidebarToggle() {
+const open = isDesktopLayout() ? !isSidebarCollapsed() : document.body.classList.contains('sidebar-open');
+const label = open ? 'Скрыть панель' : 'Открыть панель';
+const btn = $('sidebarToggle');
+btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+btn.setAttribute('aria-label', label);
+btn.title = label;
+}
+function setSidebarCollapsed(collapsed, moveFocus = false) {
+document.documentElement.classList.toggle('sidebar-collapsed', collapsed);
+try { localStorage.setItem(SIDEBAR_KEY, collapsed ? '1' : '0'); } catch (e) { /* не критично */ }
+closeMenu();
+syncSidebarToggle();
+// Фокус не должен пропасть вместе со скрытой панелью.
+if (moveFocus) (collapsed ? $('sidebarToggle') : $('sidebarCollapse')).focus();
+}
+function uiBusy() {
+return (editor.open && (editor.inFlight || isDirty())) ||
+(knEditor.open && (knEditor.inFlight || knDirty()));
+}
+function renderSidebar() {
+// Пока список не получен, показываем загрузку или ошибку с повтором, а не пустую панель.
+if (workspaceState !== 'ready') {
+const stub = workspaceState === 'error'
+? `<div class="sidebar-empty sidebar-error">Не удалось загрузить: ${esc(workspaceError)}<br><button class="btn small" type="button" data-side-retry>Повторить</button></div>`
+: '<div class="sidebar-empty">Загрузка…</div>';
+$('boardList').innerHTML = stub;
+$('knowledgeList').innerHTML = '';
+return;
+}
+
+const boards = (workspace.boards || []).filter(b => showArchived || !b.archived);
+const knowledge = (workspace.knowledge || []).filter(k => showArchived || !k.archived);
+
+$('boardList').innerHTML = boards.length
+? boards.map(b => sideItemHtml('board', b)).join('')
+: '<div class="sidebar-empty">Нет досок</div>';
+
+$('knowledgeList').innerHTML = knowledge.length
+? knowledge.map(k => sideItemHtml('knowledge', k)).join('')
+: '<div class="sidebar-empty">Нет баз знаний</div>';
+
+const active = findWorkspaceItem(activeSection.type, activeSection.id);
+$('workspaceTitle').textContent = active ? active.name : 'QA Flow';
+$('workspaceSubtitle').textContent = activeSection.type === 'knowledge'
+? 'База знаний'
+: 'Командная доска задач';
+}
+function sideItemHtml(type, item) {
+const active = activeSection.type === type && activeSection.id === item.id;
+const external = item.createdByApp ? '' : '<span class="side-ext" title="Существующий лист">◇</span>';
+return `
+<div class="side-item${active ? ' active' : ''}${item.archived ? ' archived' : ''}" data-side-type="${esc(type)}" data-side-id="${esc(item.id)}">
+<button class="side-main" type="button">${esc(item.name)}${external}</button>
+<button class="side-menu" type="button" data-side-menu="${esc(type)}" data-side-id="${esc(item.id)}" aria-label="Действия" title="Действия">⋯</button>
+</div>
+`;
+}
+function openSideMenu(trigger, type, id) {
+if (openMenu && openMenu.key === '__side') {
+closeMenu();
+return;
+}
+closeMenu();
+
+const item = findWorkspaceItem(type, id);
+if (!item) return;
+
+const menu = document.createElement('div');
+menu.className = 'pill-menu view-menu';
+menu.setAttribute('role', 'menu');
+menu.innerHTML = `
+<button class="menu-item" type="button" role="menuitem" data-sm="rename">Переименовать</button>
+<button class="menu-item" type="button" role="menuitem" data-sm="archive">${item.archived ? 'Вернуть из архива' : 'В архив'}</button>
+<button class="menu-item danger" type="button" role="menuitem" data-sm="delete" ${item.createdByApp ? '' : 'disabled'}>Удалить</button>
+`;
+
+menu.addEventListener('click', async event => {
+const button = event.target.closest('[data-sm]');
+if (!button || button.disabled) return;
+closeMenu();
+const act = button.dataset.sm;
+if (act === 'rename') await renameSection(type, id);
+else if (act === 'archive') await archiveSection(type, id);
+else if (act === 'delete') await deleteSection(type, id);
+});
+
+document.body.appendChild(menu);
+placeFloating(menu, trigger);
+openMenu = { key: '__side', menu, trigger };
+}
+async function switchSection(type, id) {
+id = Number(id);
+if (activeSection.type === type && activeSection.id === id) return;
+
+if (pending > 0) {
+showNotice('Подожди завершения сохранения.', true);
+return;
+}
+
+if (editor.open && (editor.inFlight || isDirty())) {
+showNotice('Сначала дождись сохранения или закрой карточку задачи.', true);
+return;
+}
+if (editor.open) closeEditorNow();
+
+if (knEditor.open && (knEditor.inFlight || knDirty())) {
+showNotice('Сначала дождись сохранения или закрой статью.', true);
+return;
+}
+if (knEditor.open) closeKnowledgeEditorNow();
+
+if (activeSection.type === 'board' && draftReady && isDraftDirty()) {
+if (!(await guardDraft())) return;
+}
+
+closeMenu();
+activateSection(type, id);
+}
+function activateSection(type, id) {
+id = Number(id);
+activeSection = { type, id };
+saveActiveSection();
+renderSidebar();
+
+const isBoard = type === 'board';
+$('boardView').hidden = !isBoard;
+$('knowledgeView').hidden = isBoard;
+$('newTaskBtn').hidden = !isBoard;
+document.body.classList.remove('sidebar-open');
+syncSidebarToggle();
+
+if (isBoard) {
+// Данные прежней доски и базы знаний не должны оставаться на экране.
+knowledgeToken++;
+knowledgeData = null;
+knowledgeArticles = [];
+sheetId = id;
+activeViewId = loadActiveLocal(id);
+draftReady = false;
+lastSignature = '';
+tasks = [];
+boardLoadedFor = null;
+boardNeedsLoad = true;
+$('viewTabs').innerHTML = '';
+$('stats').innerHTML = '';
+$('board').innerHTML = '<div class="loading">Загружаем задачи…</div>';
+loadBoard(false, true);
+} else {
+// Ответ по прежней доске, если он ещё в пути, отбрасывается.
+loadToken++;
+loading = false;
+boardNeedsLoad = false;
+boardLoadedFor = null;
+sheetId = null;
+tasks = [];
+lastSignature = '';
+const item = findWorkspaceItem('knowledge', id);
+$('knowledgeTitle').textContent = item ? item.name : 'База знаний';
+$('knowledgeStats').innerHTML = '';
+$('knowledgeBoard').innerHTML = '<div class="loading">Загружаем статьи…</div>';
+loadKnowledge(id);
+}
+}
+async function addBoard() {
+const name = await askName('Новая доска', 'Доска', 'Создать');
+if (!name) return;
+try {
+const res = await gs('createBoard', name);
+applyWorkspace(res.workspace);
+activateSection('board', res.id);
+showNotice('Доска создана');
+} catch (error) {
+showNotice(errText(error), true);
+}
+}
+async function addKnowledge() {
+const name = await askName('Новая база знаний', 'База знаний', 'Создать');
+if (!name) return;
+try {
+const res = await gs('createKnowledge', name);
+applyWorkspace(res.workspace);
+activateSection('knowledge', res.id);
+showNotice('База знаний создана');
+} catch (error) {
+showNotice(errText(error), true);
+}
+}
+async function renameSection(type, id) {
+const item = findWorkspaceItem(type, id);
+if (!item) return;
+const name = await askName('Переименовать', item.name);
+if (!name || name === item.name) return;
+try {
+const res = await gs('renameWorkspaceItem', id, name);
+applyWorkspace(res.workspace);
+renderSidebar();
+if (activeSection.type === type && activeSection.id === Number(id)) {
+if (type === 'board') loadBoard(true);
+else loadKnowledge(id);
+}
+showNotice('Переименовано');
+} catch (error) {
+showNotice(errText(error), true);
+}
+}
+async function archiveSection(type, id) {
+const item = findWorkspaceItem(type, id);
+if (!item) return;
+const wasArchived = item.archived;
+try {
+const res = await gs('setWorkspaceArchived', id, !wasArchived);
+applyWorkspace(res.workspace);
+renderSidebar();
+
+if (activeSection.type === type && activeSection.id === Number(id) && !wasArchived) {
+const fallback = firstActiveBoard() || firstActiveKnowledge();
+if (fallback) {
+const fallbackType = workspace.boards.includes(fallback) ? 'board' : 'knowledge';
+activateSection(fallbackType, fallback.id);
+}
+}
+
+showNotice(wasArchived ? 'Возвращено из архива' : 'Отправлено в архив');
+} catch (error) {
+showNotice(errText(error), true);
+}
+}
+async function deleteSection(type, id) {
+const item = findWorkspaceItem(type, id);
+if (!item) return;
+if (!item.createdByApp) {
+showNotice('Можно удалять только доски и базы знаний, созданные в приложении.', true);
+return;
+}
+
+const ok = await confirmDialog(
+'Удалить навсегда?',
+`«${item.name}» будет удалено вместе с листом. Это действие нельзя отменить.`,
+'Удалить',
+true
+);
+if (!ok) return;
+
+try {
+const res = await gs('deleteWorkspaceItem', id);
+applyWorkspace(res.workspace);
+renderSidebar();
+
+if (activeSection.type === type && activeSection.id === Number(id)) {
+const fallback = firstActiveBoard() || firstActiveKnowledge();
+if (fallback) {
+const fallbackType = workspace.boards.includes(fallback) ? 'board' : 'knowledge';
+activateSection(fallbackType, fallback.id);
+}
+}
+
+showNotice('Удалено');
+} catch (error) {
+showNotice(errText(error), true);
+}
+}
+// Применяет список, пришедший с сервера (после создания, переименования, архивации, удаления).
+function applyWorkspace(ws) {
+if (!ws || !Array.isArray(ws.boards) || !Array.isArray(ws.knowledge)) return;
+workspaceSeq++;
+workspace = ws;
+workspaceState = 'ready';
+}
+// Тихо перечитывает список с сервера: новые, переименованные и удалённые листы появляются без перезагрузки страницы.
+async function refreshWorkspace() {
+if (workspaceState !== 'ready' || workspaceRefreshing) return;
+workspaceRefreshing = true;
+const seq = workspaceSeq;
+try {
+const ws = await gs('getWorkspace');
+// Пока шёл запрос, список обновила другая операция: её данные новее.
+if (seq !== workspaceSeq) return;
+applyWorkspace(ws);
+renderSidebar();
+const current = findWorkspaceItem(activeSection.type, activeSection.id);
+if (!current && !uiBusy() && pending === 0) {
+// Выбранный лист удалили снаружи: переходим на доступный.
+const fallback = firstActiveBoard() || firstActiveKnowledge();
+if (fallback) activateSection(workspace.boards.includes(fallback) ? 'board' : 'knowledge', fallback.id);
+}
+} catch (error) {
+/* фоновое обновление не мешает работе: следующая попытка будет позже */
+} finally {
+workspaceRefreshing = false;
+}
+}
+async function initWorkspace() {
+workspaceState = 'loading';
+workspaceError = '';
+renderSidebar();
+setSync('Подключение…', 'saving');
+try {
+const ws = await gs('getWorkspace');
+if (!ws || !Array.isArray(ws.boards) || !Array.isArray(ws.knowledge)) {
+throw new Error('Сервер вернул некорректный список досок.');
+}
+applyWorkspace(ws);
+renderSidebar();
+
+const saved = readActiveSection();
+let target = null;
+
+if (saved) {
+const item = findWorkspaceItem(saved.type, saved.id);
+if (item && (showArchived || !item.archived)) target = saved;
+}
+
+if (!target) {
+const board = firstActiveBoard();
+if (board) target = { type: 'board', id: board.id };
+}
+
+if (!target) {
+const knowledge = firstActiveKnowledge();
+if (knowledge) target = { type: 'knowledge', id: knowledge.id };
+}
+
+if (target) activateSection(target.type, target.id);
+else {
+setSync('Нет доступных досок', 'error');
+$('boardView').hidden = false;
+$('knowledgeView').hidden = true;
+$('board').innerHTML = '<div class="loading">Нет досок и баз знаний. Создай доску кнопкой «＋» в боковой панели.</div>';
+}
+} catch (error) {
+// Список не получен: показываем ошибку и повтор, а не подменяем его листом по умолчанию.
+workspaceState = 'error';
+workspaceError = errText(error);
+renderSidebar();
+handleError(error);
+$('board').innerHTML = `<div class="loading">Не удалось загрузить список досок: ${esc(workspaceError)} <button class="btn small" type="button" data-side-retry>Повторить</button></div>`;
+}
+}
+
+/* ---------- Новый статус = новый столбец канбана ---------- */
+// Статус записывается на сервере в список допустимых значений столбца «Статус» в самой таблице.
+// Интерфейс обновляется только после успешного ответа: «ложных» столбцов не остаётся.
+let addingStatus = false;
+async function addStatusColumn() {
+  if (activeSection.type !== 'board' || sheetId === null || addingStatus) return;
+  const name = await askName('Новый статус (столбец канбана)', '', 'Добавить', 120);
+  if (!name) return;
+  const low = s => String(s).trim().replace(/\s+/g, ' ').toLocaleLowerCase('ru');
+  if (allStatuses().some(s => low(s) === low(name))) {
+    showNotice('Статус «' + name + '» уже есть. Выбери другое название.', true);
+    return;
+  }
+  addingStatus = true;
+  beginWrite();
+  try {
+    await gs('createStatus', sheetId, name);
+    endWrite();
+  } catch (error) {
+    endWrite(true);
+    addingStatus = false;
+    showNotice(errText(error), true);
+    return;
+  }
+  addingStatus = false;
+  await reloadBoard();
+  showNotice('Статус «' + name + '» добавлен: появился столбец канбана');
+}
+
+/* ---------- Свойства: показ, порядок, названия, значения, новые столбцы ---------- */
+// Те же типы, что принимает сервер (PROP_TYPES в Code.gs). «Длинный текст» — только у встроенного поля «Коммент».
+const PROP_TYPE_OPTIONS = [['text', 'Текст'], ['url', 'Ссылка'], ['select', 'Список'], ['date', 'Дата']];
+
+// Перечитывает доску после записи в настройки или в структуру таблицы.
+async function reloadBoard() {
+  lastSignature = '';
+  for (let i = 0; i < 8; i++) {
+    if (!loading && pending === 0 && !editor.inFlight) { await loadBoard(true); return; }
+    await new Promise(resolve => setTimeout(resolve, 300));
+  }
+}
+
+// Окно «Свойства». Порядок, показ, названия, типы и значения списков применяются
+// кнопкой «Сохранить»; новый столбец создаётся сразу, потому что это запись в таблицу.
+// Заголовки существующих столбцов не меняются, столбцы не удаляются.
+function openPropertySettings() {
+  closeMenu();
+
+  const listable = () => schema.filter(p => !SPECIAL_KEYS.includes(p.key) && p.type !== 'id');
+  const find = key => schema.find(p => p.key === key);
+  const st = {
+    items: {}, order: [], open: '', palette: '', newValue: {},
+    adding: false, newTitle: '', newType: 'text', newOptions: ''
+  };
+
+  const sync = () => {
+    listable().forEach(p => {
+      if (!st.items[p.key]) {
+        st.items[p.key] = {
+          title: p.title,
+          hidden: !!p.hidden,
+          type: p.type,
+          options: [...((propConfig.options || {})[p.key] || [])]
+        };
+      }
+      if (!st.order.includes(p.key)) st.order.push(p.key);
+    });
+    st.order = st.order.filter(k => find(k) && st.items[k]);
+  };
+  sync();
+
+  const valuesOf = (p, it) => {
+    const base = p.key === 'статус' ? statuses : (dropdownOptions[p.key] || []);
+    return [...new Set([...base, ...it.options])];
+  };
+
+  const typeOf = (p, it) => p.builtin ? p.type : it.type;
+
+  const valuesHtml = (p, it) => {
+    const rows = valuesOf(p, it).map(v => {
+      const extra = it.options.includes(v);
+      const palette = st.palette === v;
+
+      return `
+        <div class="pm-value">
+          <span class="value-pill ${pillClass(p.key, v)}">${esc(v)}</span>
+          <button type="button" class="color-dot${palette ? ' open' : ''}" data-palette="${esc(v)}" title="Цвет значения" aria-label="Цвет значения: ${esc(v)}">●</button>
+          ${extra ? `<button type="button" class="mini" data-act="rmvalue" data-value="${esc(v)}" title="Убрать добавленное значение" aria-label="Убрать значение ${esc(v)}">✕</button>` : ''}
+        </div>
+        ${palette ? `<div class="swatch-row" data-swatches="${esc(v)}">${swatchesHtml(p.key, v)}</div>` : ''}`;
+    }).join('');
+
+    return `
+      <div class="pm-values">
+        ${rows || '<div class="hint">Значений пока нет.</div>'}
+        <div class="pm-add">
+          <input class="field small" data-newvalue="${esc(p.key)}" maxlength="120" autocomplete="off"
+                 placeholder="Новое значение" value="${esc(st.newValue[p.key] || '')}">
+          <button type="button" class="btn small" data-act="addvalue">Добавить</button>
+        </div>
+      </div>`;
+  };
+
+  const rowHtml = (key, i) => {
+    const p = find(key);
+    const it = st.items[key];
+    const type = typeOf(p, it);
+    const isSelect = type === 'select';
+
+    return `
+      <div class="pm-row" data-key="${esc(key)}">
+        <div class="pm-main">
+          <span class="grip" draggable="true" data-grip title="Перетащи, чтобы изменить порядок" aria-hidden="true">⠿</span>
+          <button type="button" class="mini text pm-vis${it.hidden ? '' : ' on'}" data-act="toggle" aria-pressed="${!it.hidden}"
+                  title="Показывать ли свойство в карточке задачи">${it.hidden ? 'Скрыто' : 'В карточке'}</button>
+          <input class="field small pm-title" data-title maxlength="60" autocomplete="off"
+                 value="${esc(it.title)}" placeholder="${esc(p.sourceTitle || p.title)}" aria-label="Название свойства">
+          ${p.builtin
+            ? `<span class="pm-type" title="Тип встроенного свойства менять нельзя">${esc(TYPE_LABELS[p.type] || 'Текст')}</span>`
+            : `<select class="field small pm-type-sel" data-type aria-label="Тип свойства">${PROP_TYPE_OPTIONS.map(([v, l]) =>
+                `<option value="${v}"${it.type === v ? ' selected' : ''}>${l}</option>`).join('')}</select>`}
+          ${isSelect ? `<button type="button" class="mini text" data-act="values">${st.open === key ? 'Скрыть значения' : 'Значения и цвета'}</button>` : ''}
+          ${!p.builtin && p.mismatch ? `<button type="button" class="mini text warn" data-act="fixtype" title="В таблице у этого столбца остались настройки прежнего типа (список, проверка ссылки, формат даты). Нажми, чтобы привести столбец к выбранному типу: значения останутся.">Исправить в таблице</button>` : ''}
+          ${!p.builtin && !p.mismatch && it.type !== p.type ? `<span class="pm-note" title="Столбец в таблице изменится после «Сохранить»">изменится в таблице</span>` : ''}
+          <button type="button" class="mini" data-act="up" aria-label="Выше"${i === 0 ? ' disabled' : ''}>↑</button>
+          <button type="button" class="mini" data-act="down" aria-label="Ниже"${i === st.order.length - 1 ? ' disabled' : ''}>↓</button>
+        </div>
+        ${isSelect && st.open === key ? valuesHtml(p, it) : ''}
+      </div>`;
+  };
+
+  const addHtml = () => st.adding ? `
+    <div class="pm-new">
+      <div class="pm-new-row">
+        <input class="field small" id="pmNewTitle" maxlength="60" autocomplete="off" placeholder="Название свойства" value="${esc(st.newTitle)}">
+        <select class="field small" id="pmNewType" aria-label="Тип свойства">${PROP_TYPE_OPTIONS.map(([v, l]) =>
+          `<option value="${v}"${st.newType === v ? ' selected' : ''}>${l}</option>`).join('')}</select>
+      </div>
+      ${st.newType === 'select'
+        ? `<textarea class="field small" id="pmNewOptions" rows="3" placeholder="Значения списка — по одному в строке">${esc(st.newOptions)}</textarea>`
+        : ''}
+      <div class="pm-new-actions">
+        <button type="button" class="btn small primary" data-act="create">Создать столбец</button>
+        <button type="button" class="btn small" data-act="cancel-add">Отмена</button>
+      </div>
+      <p class="m-hint">В таблицу добавится новый столбец справа. Существующие столбцы и данные не меняются.</p>
+    </div>`
+    : '<button type="button" class="btn small" data-act="add">＋ Новое свойство</button>';
+
+  const m = showModal({
+    title: 'Свойства',
+    width: 720,
+    body: '',
+    actions: [
+      { label: 'Отмена', value: false },
+      {
+        label: 'Сохранить', kind: 'primary', value: true,
+        onClick: async () => {
+          // Порядок занимает те же «места», что и в текущей схеме.
+          const keys = schema.map(p => p.key);
+          const order = keys.slice();
+          keys.map((k, i) => (st.order.includes(k) ? i : -1)).filter(i => i >= 0)
+            .forEach((slot, i) => { order[slot] = st.order[i]; });
+
+          const cfg = { order, hidden: [], titles: {}, types: {}, options: {} };
+          const seen = {};
+
+          schema.forEach(p => {
+            const it = st.items[p.key];
+            const source = p.sourceTitle || p.title;
+            const title = it ? (it.title.trim().replace(/\s+/g, ' ') || source) : p.title;
+            const norm = title.toLocaleLowerCase('ru');
+
+            if (seen[norm]) throw new Error('Названия свойств должны быть разными: «' + title + '».');
+            seen[norm] = true;
+
+            if (title !== source) cfg.titles[p.key] = title;
+            if (it ? it.hidden : p.hidden) cfg.hidden.push(p.key);
+
+            if (it) {
+              if (!p.builtin) cfg.types[p.key] = it.type;
+              if (typeOf(p, it) === 'select' && it.options.length) cfg.options[p.key] = it.options;
+            }
+          });
+
+          let savedRes = null;
+          beginWrite();
+          try {
+            savedRes = await gs('savePropertyConfig', sheetId, cfg);
+            endWrite();
+          } catch (error) {
+            endWrite(true);
+            throw error;
+          }
+
+          // Значения списков, добавленные из интерфейса, переносим в правила самой таблицы:
+          // иначе таблица отклонит карточку с таким значением (в том числе со статусом).
+          let syncError = '';
+          beginWrite();
+          try {
+            await gs('syncPropertyOptions', sheetId);
+            endWrite();
+          } catch (error) {
+            endWrite(true);
+            syncError = errText(error);
+          }
+
+          await reloadBoard();
+          if (syncError) {
+            showNotice('Настройки сохранены, но значения не добавлены в список таблицы: ' + syncError, true);
+            return;
+          }
+          const changed = savedRes && savedRes.converted ? savedRes.converted.length : 0;
+          showNotice(changed ? 'Свойства сохранены, столбцов приведено к новому типу: ' + changed : 'Свойства сохранены');
+        }
+      }
+    ]
+  });
+
+  const body = m.body;
+  let dragKey = '';
+
+  const draw = () => {
+    body.innerHTML = `
+      <div class="pm-top">${addHtml()}</div>
+      <div class="pm-list">${st.order.map(rowHtml).join('') || '<div class="empty">Свойств нет</div>'}</div>
+      <p class="m-hint">Скрытое свойство не показывается в карточке задачи, но столбец и данные остаются в таблице, а само свойство доступно в фильтрах и экспорте. Названия меняются только в приложении — заголовки столбцов в таблице остаются прежними. Удалить столбец можно только в самой таблице.</p>`;
+  };
+
+  const moveKey = (key, to) => {
+    const from = st.order.indexOf(key);
+    if (from < 0 || to < 0 || to >= st.order.length) return;
+    st.order.splice(from, 1);
+    st.order.splice(to, 0, key);
+  };
+
+  const addValue = key => {
+    const p = find(key);
+    const it = st.items[key];
+    const input = body.querySelector(`[data-newvalue="${CSS.escape(key)}"]`);
+    const value = input ? input.value.trim().replace(/\s+/g, ' ') : '';
+
+    if (!value) return;
+    if (valuesOf(p, it).includes(value)) { showNotice('Такое значение уже есть.', true); return; }
+    if (it.options.length >= 100) { showNotice('Можно добавить не больше 100 значений.', true); return; }
+
+    it.options.push(value);
+    st.newValue[key] = '';
+    draw();
+  };
+
+  // Приводит столбец в таблице к выбранному типу сразу, без «Сохранить».
+  const fixType = async key => {
+    const it = st.items[key];
+    if (!it) return;
+
+    beginWrite();
+    try {
+      await gs('changePropertyType', sheetId, key, it.type);
+      endWrite();
+    } catch (error) {
+      endWrite(true);
+      showNotice(errText(error), true);
+      return;
+    }
+
+    await reloadBoard();
+    delete st.items[key];
+    sync();
+    draw();
+    showNotice('Столбец приведён к типу «' + (TYPE_LABELS[it.type] || it.type) + '»');
+  };
+
+  const createNew = async () => {
+    const title = st.newTitle.trim().replace(/\s+/g, ' ');
+    const options = st.newType === 'select'
+      ? st.newOptions.split('\n').map(v => v.trim()).filter(Boolean)
+      : [];
+
+    if (!title) { showNotice('Введи название свойства.', true); return; }
+
+    beginWrite();
+    try {
+      await gs('createProperty', sheetId, { title, type: st.newType, options });
+      endWrite();
+    } catch (error) {
+      endWrite(true);
+      showNotice(errText(error), true);
+      return;
+    }
+
+    await reloadBoard();
+    Object.assign(st, { adding: false, newTitle: '', newType: 'text', newOptions: '', open: '', palette: '' });
+    sync();
+    draw();
+    showNotice('Свойство «' + title + '» добавлено в таблицу');
+  };
+
+  body.addEventListener('click', event => {
+    const swatch = event.target.closest('[data-set-color]');
+    if (swatch) {
+      const holder = swatch.closest('[data-swatches]');
+      if (holder && st.open) {
+        setValueColor(st.open, holder.dataset.swatches, swatch.dataset.setColor);
+        draw();
+      }
+      return;
+    }
+
+    const pal = event.target.closest('[data-palette]');
+    if (pal) {
+      st.palette = st.palette === pal.dataset.palette ? '' : pal.dataset.palette;
+      draw();
+      return;
+    }
+
+    const act = event.target.closest('[data-act]');
+    if (!act) return;
+
+    const row = act.closest('.pm-row');
+    const key = row ? row.dataset.key : '';
+
+    switch (act.dataset.act) {
+      case 'add': st.adding = true; draw(); body.querySelector('#pmNewTitle').focus(); break;
+      case 'cancel-add': st.adding = false; draw(); break;
+      case 'create': createNew(); break;
+      case 'toggle': st.items[key].hidden = !st.items[key].hidden; draw(); break;
+      case 'values': st.open = st.open === key ? '' : key; st.palette = ''; draw(); break;
+      case 'up': moveKey(key, st.order.indexOf(key) - 1); draw(); break;
+      case 'down': moveKey(key, st.order.indexOf(key) + 1); draw(); break;
+      case 'addvalue': addValue(key); break;
+      case 'fixtype': fixType(key); break;
+      case 'rmvalue':
+        st.items[key].options = st.items[key].options.filter(v => v !== act.dataset.value);
+        draw();
+        break;
+    }
+  });
+
+  // Ввод не перерисовывает окно, чтобы не терять курсор.
+  body.addEventListener('input', event => {
+    const t = event.target;
+    const row = t.closest('.pm-row');
+
+    if (t.matches('[data-title]') && row) st.items[row.dataset.key].title = t.value;
+    else if (t.matches('[data-newvalue]')) st.newValue[t.dataset.newvalue] = t.value;
+    else if (t.id === 'pmNewTitle') st.newTitle = t.value;
+    else if (t.id === 'pmNewOptions') st.newOptions = t.value;
+  });
+
+  body.addEventListener('change', event => {
+    const t = event.target;
+    const row = t.closest('.pm-row');
+
+    if (t.matches('[data-type]') && row) {
+      st.items[row.dataset.key].type = t.value;
+      if (t.value !== 'select' && st.open === row.dataset.key) st.open = '';
+      draw();
+    } else if (t.id === 'pmNewType') {
+      st.newType = t.value;
+      draw();
+    }
+  });
+
+  body.addEventListener('keydown', event => {
+    if (event.key !== 'Enter') return;
+
+    if (event.target.matches('[data-newvalue]')) {
+      event.preventDefault();
+      addValue(event.target.dataset.newvalue);
+    } else if (event.target.id === 'pmNewTitle') {
+      event.preventDefault();
+      createNew();
+    }
+  });
+
+  // Порядок можно менять перетаскиванием за «ручку».
+  body.addEventListener('dragstart', event => {
+    const grip = event.target.closest('[data-grip]');
+    if (!grip) return;
+    dragKey = grip.closest('.pm-row').dataset.key;
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', 'property');
+  });
+
+  body.addEventListener('dragover', event => {
+    const row = event.target.closest('.pm-row');
+    if (!row || !dragKey) return;
+    event.preventDefault();
+    body.querySelectorAll('.drop-target').forEach(el => el.classList.remove('drop-target'));
+    row.classList.add('drop-target');
+  });
+
+  body.addEventListener('drop', event => {
+    const row = event.target.closest('.pm-row');
+    if (!row || !dragKey) return;
+    event.preventDefault();
+    moveKey(dragKey, st.order.indexOf(row.dataset.key));
+    dragKey = '';
+    draw();
+  });
+
+  body.addEventListener('dragend', () => {
+    dragKey = '';
+    body.querySelectorAll('.drop-target').forEach(el => el.classList.remove('drop-target'));
+  });
+
+  draw();
+}
+
+/* ---------- Редактор фильтров (панель над доской и экспорт) ---------- */
+function optionsFor(p) {
+const base = p.key === 'статус' ? statuses : (p.type === 'select' ? (dropdownOptions[p.key] || []) : []);
+const used = tasks.map(t => String(t[p.key] || '').trim()).filter(Boolean);
+const all = [...new Set([...base, ...used])];
+return p.key === 'статус' ? all : all.sort((a, b) => a.localeCompare(b, 'ru', { numeric: true }));
+}
+function groupCount(f, key) {
+if (f.values[key] && f.values[key].length) return f.values[key].length;
+if (f.text[key] && String(f.text[key]).trim()) return 1;
+const d = f.dates[key];
+return d && (d.from || d.to) ? 1 : 0;
+}
+function filtersPanelHtml(f) {
+const groups = schema
+.filter(p => !['id', 'title'].includes(p.type))
+.map(p => {
+const count = groupCount(f, p.key);
+const head = `<summary><span class="fp-name">${esc(p.title)}</span><span class="fp-count"${count ? '' : ' hidden'}>${count}</span></summary>`;
+const open = count ? ' open' : '';
+if (p.type === 'select' || p.key === 'версия') {
+const selected = f.values[p.key] || [];
+const options = [...optionsFor(p), EMPTY_TOKEN];
+return `<details class="fp-group" data-key="${esc(p.key)}"${open}>${head}
+<div class="fp-options">${options.map(value => `
+<label class="fp-option">
+<input type="checkbox" value="${esc(value)}"${selected.includes(value) ? ' checked' : ''}>
+${value === EMPTY_TOKEN
+? '<span class="fp-empty">Не заполнено</span>'
+: (p.type === 'select'
+? `<span class="value-pill ${pillClass(p.key, value)}">${esc(value)}</span>`
+: `<span>${esc(value)}</span>`)}
+</label>`).join('')}
+</div></details>`;
+}
+if (p.type === 'date') {
+const range = f.dates[p.key] || {};
+return `<details class="fp-group" data-key="${esc(p.key)}"${open}>${head}
+<div class="fp-dates">
+<label>С <input type="date" class="field small" data-date="from" value="${esc(range.from || '')}"></label>
+<label>По <input type="date" class="field small" data-date="to" value="${esc(range.to || '')}"></label>
+</div></details>`;
+}
+return `<details class="fp-group" data-key="${esc(p.key)}"${open}>${head}
+<div class="fp-text">
+<input class="field small" data-text placeholder="Содержит…" value="${esc(f.text[p.key] || '')}">
+</div></details>`;
+}).join('');
+return `
+<div class="fp-head">
+<span>Условия</span>
+<button type="button" class="fp-reset" data-fp-reset>Сбросить все</button>
+</div>
+<div class="fp-body">${groups || '<div class="empty">Нет свойств для фильтрации</div>'}</div>
+`;
+}
+// Рисует редактор условий внутри root и держит его в связи с объектом фильтров.
+// getF — функция, возвращающая актуальный объект { search, values, text, dates }.
+// Возвращает функцию полной перерисовки.
+function mountFilterEditor(root, getF, onChange) {
+const render = () => { root.innerHTML = filtersPanelHtml(getF()); };
+render();
+const touched = group => {
+const count = groupCount(getF(), group.dataset.key);
+const badge = group.querySelector('.fp-count');
+badge.textContent = count;
+badge.hidden = !count;
+onChange();
+};
+root.addEventListener('change', event => {
+const group = event.target.closest('.fp-group');
+if (!group) return;
+const key = group.dataset.key;
+const f = getF();
+if (event.target.matches('input[type="checkbox"]')) {
+const checked = [...group.querySelectorAll('input[type="checkbox"]:checked')].map(i => i.value);
+if (checked.length) f.values[key] = checked;
+else delete f.values[key];
+} else if (event.target.matches('[data-date]')) {
+const from = group.querySelector('[data-date="from"]').value;
+const to = group.querySelector('[data-date="to"]').value;
+if (from || to) f.dates[key] = { from, to };
+else delete f.dates[key];
+} else {
+return;
+}
+touched(group);
+});
+root.addEventListener('input', event => {
+if (!event.target.matches('[data-text]')) return;
+const group = event.target.closest('.fp-group');
+const key = group.dataset.key;
+const text = event.target.value;
+const f = getF();
+if (text.trim()) f.text[key] = text;
+else delete f.text[key];
+touched(group);
+});
+root.addEventListener('click', event => {
+if (!event.target.closest('[data-fp-reset]')) return;
+const f = getF();
+f.values = {};
+f.text = {};
+f.dates = {};
+render();
+onChange();
+});
+return render;
+}
+function openFiltersPanel() {
+if (openMenu && openMenu.key === '__filters') {
+closeMenu();
+return;
+}
+closeMenu();
+const trigger = $('filtersBtn');
+const menu = document.createElement('div');
+menu.className = 'filter-pop';
+menu.setAttribute('role', 'dialog');
+menu.setAttribute('aria-label', 'Фильтры');
+mountFilterEditor(menu, () => draft.filters, () => {
+syncQuickSelects();
+refreshView();
+});
+document.body.appendChild(menu);
+placeFloating(menu, trigger);
+openMenu = { key: '__filters', menu, trigger };
+}
+
+/* ---------- Окно «Настроить вид»: столбцы и поля карточки ---------- */
+function openViewSettings(startTab = 'active') {
+const view = currentView();
+const lanes = laneOrder(view);
+const st = {
+tab: startTab,
+active: [...lanes.active],
+hidden: [...lanes.hidden],
+show: new Set(cardProps(view))
+};
+const countOf = status =>
+tasks.filter(t => (String(t['статус'] || '').trim() || NO_STATUS) === status).length;
+const cardable = schema.filter(p => !['задача', 'номер'].includes(p.key));
+const m = showModal({
+title: 'Настроить вид · ' + view.name,
+width: 560,
+body: '',
+actions: [
+{ label: 'Отмена', value: false },
+{
+label: 'Сохранить', kind: 'primary', value: true,
+onClick: async () => {
+const next = clone(currentView());
+next.columns = { order: [...st.active, ...st.hidden], hidden: [...st.hidden] };
+const keys = schema.map(p => p.key).filter(k => st.show.has(k));
+const def = defaultCardProps();
+const isDefault = keys.length === def.length && keys.every(k => def.includes(k));
+next.props = isDefault ? null : keys;
+await persistView(next);
+renderAll();
+showNotice('Вид сохранён');
+}
+}
+]
+});
+const body = m.body;
+let dragFrom = -1;
+const draw = () => {
+const tabs = [
+['active', 'Активные', st.active.length],
+['hidden', 'Скрытые', st.hidden.length],
+['fields', 'Поля карточки', null]
+];
+let content = '';
+if (st.tab === 'active') {
+content = st.active.length
+? st.active.map((status, i) => `
+<div class="col-row" draggable="true" data-index="${i}">
+<span class="grip" aria-hidden="true">⠿</span>
+<span class="col-dot" style="background:${laneColor(status, i)}"></span>
+<span class="col-name">${esc(status)}</span>
+<span class="col-count" title="Задач в столбце">${countOf(status)}</span>
+<button type="button" class="mini" data-act="up" aria-label="Выше"${i === 0 ? ' disabled' : ''}>↑</button>
+<button type="button" class="mini" data-act="down" aria-label="Ниже"${i === st.active.length - 1 ? ' disabled' : ''}>↓</button>
+<button type="button" class="mini text" data-act="hide">Скрыть</button>
+</div>`).join('')
+: '<div class="empty">Все столбцы скрыты — на доске ничего не будет видно.</div>';
+content += '<p class="m-hint">Порядок меняется перетаскиванием или кнопками ↑ ↓. Скрытие столбца — только настройка отображения: задачи в таблице не меняются.</p>';
+} else if (st.tab === 'hidden') {
+content = st.hidden.length
+? st.hidden.map((status, i) => `
+<div class="col-row" data-index="${i}">
+<span class="col-dot" style="background:${laneColor(status, i)}"></span>
+<span class="col-name">${esc(status)}</span>
+<span class="col-count" title="Задач в столбце">${countOf(status)}</span>
+<button type="button" class="mini text" data-act="show">Показать</button>
+</div>`).join('')
+: '<div class="empty">Скрытых столбцов нет.</div>';
+} else {
+content = cardable.map(p => `
+<label class="field-row">
+<input type="checkbox" data-field="${esc(p.key)}"${st.show.has(p.key) ? ' checked' : ''}>
+<span class="field-name">${esc(p.title)}</span>
+<span class="field-type">${esc(TYPE_LABELS[p.type] || 'Текст')}</span>
+</label>`).join('') +
+'<div class="m-actions"><button type="button" class="btn small" data-act="defaults">По умолчанию</button></div>' +
+'<p class="m-hint">Эти свойства показываются на карточках доски в этом представлении. В самой карточке задачи доступны все свойства.</p>';
+}
+body.innerHTML = `
+<div class="m-tabs" role="tablist">
+${tabs.map(([id, label, n]) => `
+<button type="button" class="m-tab${st.tab === id ? ' active' : ''}" role="tab" aria-selected="${st.tab === id}" data-tab="${id}">${label}${n === null ? '' : ` <span class="m-count">${n}</span>`}</button>
+`).join('')}
+</div>
+<div class="m-list">${content}</div>
+`;
+};
+const move = (list, from, to) => {
+if (to < 0 || to >= list.length) return;
+const [item] = list.splice(from, 1);
+list.splice(to, 0, item);
+};
+body.addEventListener('click', event => {
+const tab = event.target.closest('[data-tab]');
+if (tab) { st.tab = tab.dataset.tab; draw(); return; }
+const act = event.target.closest('[data-act]');
+if (!act) return;
+const row = act.closest('.col-row');
+const i = row ? Number(row.dataset.index) : -1;
+if (act.dataset.act === 'up') move(st.active, i, i - 1);
+else if (act.dataset.act === 'down') move(st.active, i, i + 1);
+else if (act.dataset.act === 'hide') st.hidden.push(st.active.splice(i, 1)[0]);
+else if (act.dataset.act === 'show') st.active.push(st.hidden.splice(i, 1)[0]);
+else if (act.dataset.act === 'defaults') st.show = new Set(defaultCardProps());
+draw();
+});
+body.addEventListener('change', event => {
+const box = event.target.closest('[data-field]');
+if (!box) return;
+if (box.checked) st.show.add(box.dataset.field);
+else st.show.delete(box.dataset.field);
+});
+// Перетаскивание порядка активных столбцов.
+body.addEventListener('dragstart', event => {
+const row = event.target.closest('.col-row[draggable]');
+if (!row) return;
+dragFrom = Number(row.dataset.index);
+event.dataTransfer.effectAllowed = 'move';
+event.dataTransfer.setData('text/plain', 'column');
+row.classList.add('dragging');
+});
+body.addEventListener('dragover', event => {
+const row = event.target.closest('.col-row[draggable]');
+if (!row || dragFrom < 0) return;
+event.preventDefault();
+body.querySelectorAll('.drop-target').forEach(el => el.classList.remove('drop-target'));
+row.classList.add('drop-target');
+});
+body.addEventListener('drop', event => {
+const row = event.target.closest('.col-row[draggable]');
+if (!row || dragFrom < 0) return;
+event.preventDefault();
+move(st.active, dragFrom, Number(row.dataset.index));
+dragFrom = -1;
+draw();
+});
+body.addEventListener('dragend', () => {
+dragFrom = -1;
+body.querySelectorAll('.dragging,.drop-target').forEach(el => el.classList.remove('dragging', 'drop-target'));
+});
+draw();
+}
+
+/* ---------- Доска ---------- */
+/* ---------- Личный вид доски: свёрнутые столбцы и компактные карточки ---------- */
+// Хранится в браузере отдельно для каждой доски и не меняет общие представления команды.
+function readBoardUi() {
+try {
+const raw = JSON.parse(localStorage.getItem(BOARD_UI_KEY) || '{}');
+return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+} catch (e) {
+return {};
+}
+}
+function boardUiFor() {
+const key = String(sheetId ?? '');
+if (!boardUi[key] || typeof boardUi[key] !== 'object') boardUi[key] = { collapsed: [], compact: false };
+if (!Array.isArray(boardUi[key].collapsed)) boardUi[key].collapsed = [];
+return boardUi[key];
+}
+function saveBoardUi() {
+try {
+// Перед записью перечитываем: в другой вкладке могли поменять другую доску.
+const key = String(sheetId ?? '');
+const all = readBoardUi();
+all[key] = boardUiFor();
+boardUi = all;
+localStorage.setItem(BOARD_UI_KEY, JSON.stringify(all));
+} catch (e) { /* не критично: настройка останется до перезагрузки */ }
+}
+const isCompact = () => !!boardUiFor().compact;
+const isLaneCollapsed = status => boardUiFor().collapsed.includes(status);
+function toggleLane(status) {
+const ui = boardUiFor();
+const index = ui.collapsed.indexOf(status);
+if (index === -1) ui.collapsed.push(status);
+else ui.collapsed.splice(index, 1);
+ui.collapsed = ui.collapsed.slice(-100);
+saveBoardUi();
+renderBoard();
+}
+function setCompact(on) {
+boardUiFor().compact = !!on;
+saveBoardUi();
+renderBoard();
+}
+function syncCompactBtn() {
+const button = $('compactBtn');
+if (!button) return;
+const on = isCompact();
+button.classList.toggle('is-on', on);
+button.setAttribute('aria-pressed', String(on));
+}
+// Компактная карточка: только заголовок. Номер и полное название — во всплывающей подсказке.
+function compactCard(task) {
+const number = task['номер'] || '#' + task._row;
+return `<article class="task compact" draggable="true" data-id="${esc(task._id)}" title="№ ${esc(number)} · ${esc(task['задача'])}"><div class="task-title">${esc(task['задача'])}</div></article>`;
+}
+function renderBoard() {
+const view = currentView();
+syncCompactBtn();
+const lanes = laneOrder(view);
+const known = allStatuses();
+const visible = getFilteredTasks();
+// Скрытые столбцы только не показываются: задачи в таблице остаются как есть.
+const grouped = new Map(lanes.active.map(status => [status, []]));
+let inHidden = 0;
+visible.forEach(task => {
+const status = String(task['статус'] || '').trim() || NO_STATUS;
+if (grouped.has(status)) grouped.get(status).push(task);
+else inHidden++;
+});
+grouped.forEach((items, status) => grouped.set(status, sortTasks(items)));
+$('stats').innerHTML = `
+<div class="stat">Всего задач <strong>${tasks.length}</strong></div>
+<div class="stat">По фильтрам <strong>${visible.length}</strong></div>
+<div class="stat">Столбцов <strong>${lanes.active.length}/${lanes.order.length}</strong></div>
+${inHidden ? `<div class="stat">В скрытых столбцах <strong>${inHidden}</strong></div>` : ''}
+`;
+$('board').innerHTML = ([...grouped.entries()].map(([status, items]) => {
+// Цвет точки привязан к статусу (а не к позиции после перестановки).
+const assigned = colorOf('статус', status);
+const color = assigned ? COLOR_HEX[assigned] : COLORS[Math.max(0, known.indexOf(status)) % COLORS.length];
+// Свёрнутый столбец: только заголовок, число карточек, кнопка добавления и разворачивание.
+// Сам столбец остаётся на доске, поэтому карточку можно перетащить на него.
+if (isLaneCollapsed(status)) {
+return `
+<section class="lane collapsed" data-status="${esc(status)}" style="--lane-color:${color}">
+<div class="lane-head">
+<button class="lane-toggle" type="button" data-toggle-lane="${esc(status)}" aria-expanded="false" title="Развернуть столбец" aria-label="Развернуть столбец «${esc(status)}»">▸</button>
+<div class="lane-title"><span class="dot"></span><span>${esc(status)}</span></div>
+<span class="count" title="Карточек: ${items.length}">${items.length}</span>
+<button class="add-lane" type="button" data-add-status="${esc(status)}" title="Создать задачу в этом статусе" aria-label="Создать задачу в статусе «${esc(status)}»">+</button>
+</div>
+</section>
+`;
+}
+const cards = items.length
+? items.map(t => taskCard(t, view)).join('')
+: '<div class="empty">Перетащи сюда задачу</div>';
+return `
+<section class="lane" data-status="${esc(status)}" style="--lane-color:${color}">
+<div class="lane-head">
+<button class="lane-toggle" type="button" data-toggle-lane="${esc(status)}" aria-expanded="true" title="Свернуть столбец" aria-label="Свернуть столбец «${esc(status)}»">▾</button>
+<div class="lane-title"><span class="dot"></span><span>${esc(status)}</span></div>
+<span class="count">${items.length}</span>
+<button class="add-lane" type="button" data-add-status="${esc(status)}" title="Создать задачу в этом статусе">+</button>
+</div>
+<div class="lane-cards">${cards}</div>
+</section>
+`;
+}).join('') || '<div class="board-note">Все столбцы скрыты. Открой «▥ Настроить вид», чтобы вернуть нужные.</div>') +
+'<div class="lane-add-col" style="flex:0 0 auto;align-self:flex-start;padding:4px 8px"><button class="btn" type="button" data-add-column title="Создать новый статус и столбец канбана">＋ Добавить столбец</button></div>';
+document.querySelectorAll('.lane').forEach(lane => {
+lane.addEventListener('dragover', event => {
+event.preventDefault();
+lane.classList.add('drag-over');
+});
+lane.addEventListener('dragleave', event => {
+if (!lane.contains(event.relatedTarget)) lane.classList.remove('drag-over');
+});
+lane.addEventListener('drop', event => {
+event.preventDefault();
+lane.classList.remove('drag-over');
+const id = event.dataTransfer.getData('text/plain');
+const task = tasks.find(t => t._id === id);
+const laneStatus = lane.dataset.status;
+const newStatus = laneStatus === NO_STATUS ? '' : laneStatus;
+if (task && String(task['статус'] || '') !== newStatus) changeStatus(task, newStatus);
+});
+});
+document.querySelectorAll('[data-add-status]').forEach(button => {
+button.addEventListener('click', () => {
+const status = button.dataset.addStatus;
+openEditor(null, status === NO_STATUS ? '' : status);
+});
+});
+document.querySelectorAll('.task').forEach(card => {
+card.addEventListener('dragstart', event => {
+card.classList.add('dragging');
+event.dataTransfer.setData('text/plain', card.dataset.id);
+event.dataTransfer.effectAllowed = 'move';
+});
+card.addEventListener('dragend', () => card.classList.remove('dragging'));
+card.addEventListener('click', event => {
+if (event.target.closest('a[data-link]')) return;
+const task = tasks.find(t => t._id === card.dataset.id);
+if (task) openEditor(task);
+});
+});
+}
+// Пилюли свойств на карточке: только те, что включены в представлении.
+function cardTags(task, view) {
+const show = cardProps(view);
+const skip = ['задача', 'номер', 'коммент', ...CARD_BOTTOM];
+return schema
+.filter(p => show.has(p.key) && !skip.includes(p.key) && p.type !== 'longtext')
+.map(p => {
+const value = String(task[p.key] || '').trim();
+if (!value) return '';
+if (p.type === 'date') return pillTag(p.key, value, fmtDate(value), p.title);
+if (p.type === 'url') {
+const href = safeHref(value);
+if (href) return linkTag(p.key, value, href, p.title);
+}
+// У пользовательских текстовых свойств показываем название: по одному значению не понять, что это.
+const text = !p.builtin && p.type === 'text' ? p.title + ': ' + value : value;
+return pillTag(p.key, value, text, p.title);
+})
+.join('');
+}
+function taskCard(task, view) {
+if (isCompact()) return compactCard(task);
+const show = cardProps(view);
+const tags = cardTags(task, view);
+const comment = show.has('коммент') ? richToHtml(task['коммент']) : '';
+const showAssignee = show.has('исполнитель');
+const showDeveloper = show.has('разраб');
+const bottom = showAssignee || showDeveloper ? `
+<div class="task-bottom">
+<span>${showAssignee ? (task['исполнитель'] ? '◉ ' + esc(task['исполнитель']) : 'Без исполнителя') : ''}</span>
+<span>${showDeveloper && task['разраб'] ? '⚙ ' + esc(task['разраб']) : ''}</span>
+</div>` : '';
+return `
+<article class="task" draggable="true" data-id="${esc(task._id)}">
+<div class="task-top">
+<span class="task-id">${esc(task['номер'] || '#' + task._row)}</span>
+<span style="color:#898da7">↗</span>
+</div>
+<div class="task-title">${esc(task['задача'])}</div>
+${tags ? `<div class="task-meta">${tags}</div>` : ''}
+${comment ? `<div class="task-comment">${comment}</div>` : ''}
+${bottom}
+</article>
+`;
+}
+// Ссылка на карточке: настоящая ссылка, открывается в новой вкладке и не открывает карточку.
+function linkTag(key, value, href, title) {
+return `<a class="tag link-tag ${pillClass(key, value)}" href="${esc(href)}" target="_blank" rel="noopener noreferrer" draggable="false" data-link title="${esc(href)}">${esc(title || 'Ссылка')} ↗</a>`;
+}
+function pillTag(key, value, text, title) {
+return `<span class="tag ${pillClass(key, value)}"${title ? ` title="${esc(title)}"` : ''}>${esc(text ?? value)}</span>`;
+}
+
+/* ---------- Запись в таблицу ---------- */
+// Записи одной задачи идут строго по очереди: старый запрос
+// не может завершиться позже нового и затереть его результат.
+function sendPatch(task, changes) {
+const run = () => {
+const base = {};
+Object.keys(changes).forEach(k => { base[k] = task._base[k] ?? ''; });
+beginWrite();
+return gs('saveTask', sheetId, task._id, changes, base).then(
+res => {
+endWrite();
+const conflicts = res.conflicts || {};
+const values = res.values || {};
+Object.keys(changes).forEach(k => {
+if (k in conflicts) {
+task[k] = conflicts[k];
+task._base[k] = conflicts[k];
+} else if (k in values) {
+task[k] = values[k];
+task._base[k] = values[k];
+}
+});
+return { conflicts };
+},
+error => {
+endWrite(true);
+throw error;
+}
+);
+};
+const chain = (task._chain || Promise.resolve()).catch(() => {}).then(run);
+task._chain = chain;
+return chain;
+}
+function changeStatus(task, newStatus) {
+task['статус'] = newStatus;
+renderBoard();
+sendPatch(task, { 'статус': newStatus })
+.then(({ conflicts }) => {
+if ('статус' in conflicts) {
+showNotice('Статус уже изменён в таблице — показываю актуальный.', true);
+} else {
+showNotice('Статус изменён: ' + (newStatus || NO_STATUS));
+}
+renderBoard();
+})
+.catch(error => {
+task['статус'] = task._base['статус'];
+renderBoard();
+showNotice(errText(error), true);
+});
+}
+
+/* ---------- Редактор карточки ---------- */
+function setSaveStatus(message, state = '') {
+const el = $('saveStatus');
+el.textContent = message;
+el.className = 'save-status' + (state ? ' ' + state : '');
+}
+function defaultValues(defaultStatus) {
+const values = {};
+schema.forEach(p => { values[p.key] = ''; });
+values['статус'] = defaultStatus ||
+(statuses.includes('Не залито') ? 'Не залито' : statuses[0] || '');
+return values;
+}
+function isDirty() {
+if (!editor.open) return false;
+if (editor.mode === 'create') {
+return !!String(editor.values['задача'] || '').trim();
+}
+return !!editor.task && Object.keys(getEditorChanges()).length > 0;
+}
+function getEditorChanges() {
+const changes = {};
+Object.keys(editor.values).forEach(key => {
+if (!same(key, editor.values[key], editor.task._base[key])) {
+changes[key] = editor.values[key];
+}
+});
+return changes;
+}
+function setFullscreen(on) {
+fullscreen = !!on;
+$('taskOverlay').classList.toggle('fs', fullscreen);
+const btn = $('toggleFullscreen');
+btn.textContent = fullscreen ? '⤡' : '⤢';
+btn.title = fullscreen ? 'Свернуть окно' : 'Развернуть на весь экран';
+btn.setAttribute('aria-label', btn.title);
+try { localStorage.setItem(FS_KEY, fullscreen ? '1' : '0'); } catch (e) { /* не критично */ }
+}
+// Панель свойств сворачивается, чтобы текст занял всё окно.
+function setPropsCollapsed(on) {
+propsCollapsed = !!on;
+closeMenu();
+$('propsSection').classList.toggle('collapsed', propsCollapsed);
+$('propsToggle').setAttribute('aria-expanded', String(!propsCollapsed));
+renderPropsSummary();
+try { localStorage.setItem(PROPS_KEY, propsCollapsed ? '1' : '0'); } catch (e) { /* не критично */ }
+}
+// В свёрнутом виде показываем заполненные свойства одной строкой.
+function renderPropsSummary() {
+const box = $('propsSummary');
+if (!editor.open) { box.innerHTML = ''; return; }
+box.innerHTML = schema
+.filter(p => !SPECIAL_KEYS.includes(p.key) && p.type !== 'id' && !p.hidden)
+.map(p => {
+const value = editor.values[p.key] || '';
+if (!value) return '';
+if (p.type === 'select') {
+return `<span class="value-pill ${pillClass(p.key, value)}" title="${esc(p.title)}">${esc(value)}</span>`;
+}
+const text = p.type === 'date' ? fmtDate(value) : value;
+return `<span class="value-pill pill-${pillStyle(p.key)}" title="${esc(p.title)}">${esc(text)}</span>`;
+})
+.join('');
+}
+function setRichContent(value) {
+rich.innerHTML = richToHtml(value);
+syncRichEmpty();
+}
+function syncRichEmpty() {
+const empty = !rich.textContent.trim() && !rich.querySelector('li');
+rich.classList.toggle('is-empty', empty);
+}
+function openEditor(task = null, defaultStatus = '') {
+clearTimeout(editor.timer);
+clearTimeout(editor.retry);
+closeMenu();
+editor.open = true;
+editor.mode = task ? 'edit' : 'create';
+editor.task = task;
+editor.inFlight = false;
+editor.closeRequested = false;
+editor.retries = 0;
+editor.requestId = uid();
+const source = task || defaultValues(defaultStatus);
+editor.values = {};
+schema.forEach(p => {
+if (p.type !== 'id') editor.values[p.key] = source[p.key] ?? '';
+});
+editor.initial = { ...editor.values };
+$('editorTaskId').textContent = task
+? '№ ' + (task['номер'] || task._row)
+: 'Новая задача';
+$('taskTitle').value = editor.values['задача'] || '';
+const hasComment = 'коммент' in editor.values;
+$('commentSection').hidden = !hasComment;
+setRichContent(hasComment ? editor.values['коммент'] : '');
+buildPropertyGrid();
+setFullscreen(fullscreen);
+setPropsCollapsed(propsCollapsed);
+$('taskOverlay').classList.add('open');
+$('taskOverlay').setAttribute('aria-hidden', 'false');
+document.body.style.overflow = 'hidden';
+setSaveStatus(task ? 'Все изменения сохранены' : 'Введи название — карточка создастся автоматически');
+$('taskTitle').focus();
+updateToolbar();
+}
+function closeEditorNow() {
+clearTimeout(editor.timer);
+clearTimeout(editor.retry);
+closeMenu();
+if (typeof hideTaskLinkForm === 'function') hideTaskLinkForm();
+$('taskOverlay').classList.remove('open');
+$('taskOverlay').setAttribute('aria-hidden', 'true');
+editor.open = false;
+editor.task = null;
+editor.inFlight = false;
+editor.closeRequested = false;
+document.body.style.overflow = '';
+}
+function requestCloseEditor() {
+clearTimeout(editor.timer);
+clearTimeout(editor.retry);
+if (editor.mode === 'create' && !String(editor.values['задача'] || '').trim()) {
+const touched = Object.keys(editor.values).some(key =>
+key !== 'задача' && !same(key, editor.values[key], editor.initial[key])
+);
+if (touched) {
+showNotice('Введи название — без него карточка не сохранится.', true);
+$('taskTitle').focus();
+return;
+}
+closeEditorNow();
+return;
+}
+if (isDirty() || editor.inFlight) {
+editor.closeRequested = true;
+setSaveStatus('Сохраняю перед закрытием…', 'saving');
+if (!editor.inFlight) saveEditor();
+return;
+}
+closeEditorNow();
+}
+function scheduleSave(immediate = false) {
+renderPropsSummary();
+clearTimeout(editor.timer);
+clearTimeout(editor.retry);
+editor.retries = 0;
+if (editor.mode === 'create') {
+if (!String(editor.values['задача'] || '').trim()) {
+setSaveStatus('Введи название — карточка создастся автоматически');
+return;
+}
+setSaveStatus('Есть несохранённые изменения', 'saving');
+if (immediate) saveEditor();
+else editor.timer = setTimeout(saveEditor, 2000);
+return;
+}
+if (!isDirty()) {
+if (!editor.inFlight) setSaveStatus('Все изменения сохранены');
+return;
+}
+setSaveStatus('Есть несохранённые изменения', 'saving');
+if (immediate) saveEditor();
+else editor.timer = setTimeout(saveEditor, 650);
+}
+function saveEditor() {
+clearTimeout(editor.timer);
+if (!editor.open) return;
+if (editor.inFlight) return; // после текущего запроса afterSave() отправит остаток
+if (!String(editor.values['задача'] || '').trim()) {
+setSaveStatus('Название не может быть пустым', 'error');
+editor.closeRequested = false;
+return;
+}
+if (editor.mode === 'create') createFromEditor();
+else patchFromEditor();
+}
+function createFromEditor() {
+const sent = { ...editor.values };
+editor.inFlight = true;
+setSaveStatus('Создаю карточку…', 'saving');
+beginWrite();
+gs('createTask', sheetId, sent, editor.requestId)
+.then(res => {
+endWrite();
+editor.inFlight = false;
+const task = attachBase({ _id: res.id, _row: res.row, ...res.values });
+tasks.push(task);
+editor.task = task;
+editor.mode = 'edit';
+editor.requestId = '';
+$('editorTaskId').textContent = '№ ' + (task['номер'] || task._row);
+adoptServerValues(sent, task, {});
+showNotice('Карточка № ' + (task['номер'] || task._row) + ' создана');
+renderBoard();
+afterSave();
+})
+.catch(error => {
+endWrite(true);
+editor.inFlight = false;
+onSaveError(error);
+});
+}
+function patchFromEditor() {
+const task = editor.task;
+const changes = getEditorChanges();
+if (!task || !Object.keys(changes).length) {
+afterSave();
+return;
+}
+editor.inFlight = true;
+setSaveStatus('Сохраняю…', 'saving');
+sendPatch(task, changes)
+.then(({ conflicts }) => {
+editor.inFlight = false;
+const keys = Object.keys(conflicts);
+keys.forEach(key => {
+if (same(key, editor.values[key], changes[key])) {
+editor.values[key] = task[key];
+refreshControl(key);
+}
+});
+if (keys.length) {
+showNotice('Часть полей изменили в таблице — показаны актуальные значения.', true);
+}
+adoptServerValues(changes, task, conflicts);
+renderBoard();
+afterSave();
+})
+.catch(error => {
+editor.inFlight = false;
+onSaveError(error);
+});
+}
+// Если таблица нормализовала значение (например, обрезала пробелы),
+// редактор принимает его, иначе сохранение зациклилось бы.
+function adoptServerValues(sent, task, conflicts) {
+Object.keys(sent).forEach(key => {
+if (key in conflicts) return;
+if (same(key, editor.values[key], sent[key]) && !same(key, task[key], sent[key])) {
+editor.values[key] = task[key] ?? '';
+refreshControl(key);
+} else if (isRichKey(key) && editor.values[key] === sent[key]) {
+// Содержимое то же, но записано иначе: принимаем серверную запись без перерисовки.
+editor.values[key] = task[key] ?? editor.values[key];
+}
+});
+}
+function afterSave() {
+editor.retries = 0;
+if (isDirty()) {
+saveEditor();
+return;
+}
+setSaveStatus('Все изменения сохранены');
+if (editor.closeRequested) closeEditorNow();
+}
+function onSaveError(error) {
+editor.closeRequested = false;
+showNotice(errText(error), true);
+if (editor.retries < MAX_RETRIES) {
+editor.retries++;
+setSaveStatus('Ошибка сохранения — повторю автоматически', 'error');
+editor.retry = setTimeout(saveEditor, 5000);
+} else {
+setSaveStatus('Не удалось сохранить. Проверь соединение и измени поле ещё раз', 'error');
+}
+}
+// После ручного или автоматического обновления подтягиваем в открытую
+// карточку значения, которые изменили в таблице, если пользователь
+// сам эти поля не трогал.
+function mergeIntoEditor() {
+if (!editor.open || editor.mode !== 'edit' || !editor.task) return;
+const fresh = tasks.find(t => t._id === editor.task._id);
+if (!fresh) {
+showNotice('Эту задачу удалили из таблицы.', true);
+closeEditorNow();
+return;
+}
+const old = editor.task;
+Object.keys(editor.values).forEach(key => {
+if (
+same(key, editor.values[key], old._base[key]) &&
+!same(key, fresh[key], old._base[key])
+) {
+editor.values[key] = fresh[key] ?? '';
+refreshControl(key);
+}
+});
+editor.task = fresh;
+}
+
+/* ---------- Свойства в карточке ---------- */
+function buildPropertyGrid() {
+const grid = $('propertyGrid');
+grid.innerHTML = '';
+controls.clear();
+schema
+.filter(p => !SPECIAL_KEYS.includes(p.key) && p.type !== 'id' && !p.hidden)
+.forEach(p => {
+const row = document.createElement('div');
+row.className = 'property';
+const label = document.createElement('label');
+label.textContent = p.title;
+const control = document.createElement('div');
+control.className = 'prop-control';
+row.append(label, control);
+grid.appendChild(row);
+controls.set(p.key, control);
+renderControl(p);
+});
+}
+function renderControl(p) {
+if (p.type === 'select') renderPicker(p);
+else if (p.type === 'date') renderDate(p);
+else if (p.type === 'url') renderLink(p);
+else renderText(p);
+}
+function refreshControl(key) {
+if (key === 'задача') { $('taskTitle').value = editor.values[key] || ''; return; }
+if (key === 'коммент') {
+// Не трогаем DOM, если содержимое уже совпадает: иначе собьётся курсор.
+if (richCanon(rich.innerHTML) !== richCanon(editor.values[key])) {
+setRichContent(editor.values[key] || '');
+}
+return;
+}
+const p = schema.find(item => item.key === key);
+if (!p || !controls.has(key)) return;
+if (p.type === 'select' || p.type === 'date') {
+renderControl(p);
+} else if (p.type === 'url') {
+// Пока человек печатает ссылку, поле не перерисовываем: собьётся курсор.
+const input = controls.get(key).querySelector('input');
+if (!input || document.activeElement !== input) renderLink(p);
+} else {
+const input = controls.get(key).querySelector('input');
+if (input) input.value = editor.values[key] || '';
+}
+renderPropsSummary();
+}
+function renderText(p) {
+const root = controls.get(p.key);
+root.innerHTML = '';
+const input = document.createElement('input');
+input.className = 'property-input';
+input.placeholder = p.key === 'версия' ? 'Например, 2.15.0' : 'Не заполнено';
+input.value = editor.values[p.key] || '';
+input.addEventListener('input', () => {
+editor.values[p.key] = input.value.trim();
+scheduleSave(false);
+});
+root.appendChild(input);
+}
+// Ссылка: когда адрес задан, в карточке показана настоящая ссылка (открывается в новой вкладке),
+// рядом кнопка «изменить»; пустое или редактируемое значение показывается полем ввода.
+function renderLink(p) {
+const root = controls.get(p.key);
+const value = editor.values[p.key] || '';
+const href = safeHref(value);
+root.innerHTML = '';
+root.classList.add('link-control');
+const input = document.createElement('input');
+input.className = 'property-input';
+input.type = 'text';
+input.inputMode = 'url';
+input.placeholder = 'https:\u002f\u002f…';
+input.value = value;
+input.setAttribute('aria-label', p.title);
+const view = document.createElement('div');
+view.className = 'link-view';
+const anchor = document.createElement('a');
+anchor.className = 'link-open';
+anchor.target = '_blank';
+anchor.rel = 'noopener noreferrer';
+anchor.textContent = value;
+if (href) { anchor.href = href; anchor.title = 'Открыть в новой вкладке'; }
+const edit = document.createElement('button');
+edit.type = 'button';
+edit.className = 'mini link-edit';
+edit.textContent = '✎';
+edit.title = 'Изменить ссылку';
+edit.setAttribute('aria-label', 'Изменить ссылку');
+view.append(anchor, edit);
+const showInput = () => {
+view.hidden = true;
+input.hidden = false;
+input.focus();
+input.select();
+};
+// Адрес без протокола дополняется до https:/; не-ссылка не уходит в таблицу.
+const commit = () => {
+const raw = input.value.trim();
+const url = normalizeUrlInput(raw);
+if (url === null) {
+showNotice('«' + p.title + '»: нужна ссылка, начинающаяся с http:\u002f\u002f или https:\u002f\u002f', true);
+input.classList.add('invalid');
+return;
+}
+input.classList.remove('invalid');
+input.value = url;
+if (url !== (editor.values[p.key] || '')) {
+editor.values[p.key] = url;
+scheduleSave(false);
+}
+renderLink(p);
+};
+input.addEventListener('input', () => {
+input.classList.remove('invalid');
+const raw = input.value.trim();
+// Во время набора сохраняем только готовые адреса; остальное обработает уход из поля.
+if (!raw || HTTP_URL_RE.test(raw)) {
+editor.values[p.key] = raw;
+scheduleSave(false);
+}
+});
+input.addEventListener('blur', commit);
+input.addEventListener('keydown', event => {
+if (event.key === 'Enter') { event.preventDefault(); input.blur(); }
+});
+edit.addEventListener('click', showInput);
+// Клик по ссылке не должен закрывать карточку или менять выбор.
+anchor.addEventListener('click', event => event.stopPropagation());
+if (href) input.hidden = true; else view.hidden = true;
+root.append(input, view);
+}
+function renderPicker(p) {
+const root = controls.get(p.key);
+const value = editor.values[p.key] || '';
+root.classList.add('pill-select');
+root.innerHTML = `
+<button class="pill-trigger" type="button" aria-haspopup="listbox" aria-expanded="false">
+${value
+? `<span class="value-pill ${pillClass(p.key, value)}">${esc(value)}</span>`
+: '<span class="pill-placeholder">Не выбрано</span>'}
+<span class="pill-chevron">▾</span>
+</button>
+`;
+root.querySelector('button').addEventListener('click', event => {
+event.stopPropagation();
+openPickerMenu(p, root);
+});
+}
+function placeFloating(el, trigger) {
+const rect = trigger.getBoundingClientRect();
+const height = Math.min(el.scrollHeight, 330);
+const width = el.getBoundingClientRect().width;
+const below = window.innerHeight - rect.bottom;
+const top = below >= height + 8 || rect.top < height
+? Math.min(rect.bottom + 5, window.innerHeight - height - 8)
+: Math.max(8, rect.top - height - 5);
+el.style.top = Math.max(8, top) + 'px';
+el.style.left = Math.min(Math.max(8, rect.left), window.innerWidth - width - 8) + 'px';
+}
+function swatchesHtml(key, value) {
+const current = colorOf(key, value);
+return `
+<button class="swatch none${current ? '' : ' on'}" type="button" data-set-color="" title="Без цвета" aria-label="Без цвета">✕</button>
+${COLOR_LIST.map(([name, label, hex]) => `
+<button class="swatch${current === name ? ' on' : ''}" type="button" data-set-color="${name}"
+style="background:${hex}" title="${label}" aria-label="${label}"></button>
+`).join('')}
+`;
+}
+function openPickerMenu(p, root) {
+if (openMenu && openMenu.key === p.key) {
+closeMenu();
+return;
+}
+closeMenu();
+const trigger = root.querySelector('.pill-trigger');
+const current = editor.values[p.key] || '';
+const base = p.key === 'статус' ? statuses : (dropdownOptions[p.key] || []);
+const values = [...new Set(base)];
+// Значение, которого нет в списке (старые данные), остаётся доступным.
+if (current && !values.includes(current)) values.unshift(current);
+const menu = document.createElement('div');
+menu.className = 'pill-menu';
+menu.setAttribute('role', 'listbox');
+menu.innerHTML = `
+<div class="pill-row">
+<button class="pill-option" type="button" data-value="" role="option" aria-selected="${current === ''}">
+<span class="none-pill">Не выбрано</span>
+</button>
+</div>
+${values.map(value => `
+<div class="pill-row" data-row="${esc(value)}">
+<button class="pill-option" type="button" data-value="${esc(value)}" role="option" aria-selected="${value === current}">
+<span class="value-pill ${pillClass(p.key, value)}">${esc(value)}</span>
+</button>
+<button class="color-dot" type="button" data-color-for="${esc(value)}" title="Цвет значения" aria-label="Цвет значения">●</button>
+</div>
+<div class="swatch-row" data-swatches="${esc(value)}" hidden></div>
+`).join('')}
+`;
+const findSwatches = value =>
+[...menu.querySelectorAll('[data-swatches]')].find(el => el.dataset.swatches === value);
+// Один обработчик на всё меню (выбор значения, показ палитры, выбор цвета).
+menu.addEventListener('click', event => {
+const swatch = event.target.closest('[data-set-color]');
+if (swatch) {
+const holder = swatch.closest('[data-swatches]');
+setValueColor(p.key, holder.dataset.swatches, swatch.dataset.setColor);
+holder.innerHTML = swatchesHtml(p.key, holder.dataset.swatches);
+return;
+}
+const dot = event.target.closest('[data-color-for]');
+if (dot) {
+const value = dot.dataset.colorFor;
+const holder = findSwatches(value);
+const willOpen = holder.hidden;
+menu.querySelectorAll('[data-swatches]').forEach(el => { el.hidden = true; });
+menu.querySelectorAll('.color-dot').forEach(el => el.classList.remove('open'));
+if (willOpen) {
+holder.innerHTML = swatchesHtml(p.key, value);
+holder.hidden = false;
+dot.classList.add('open');
+}
+return;
+}
+const option = event.target.closest('[data-value]');
+if (option) {
+editor.values[p.key] = option.dataset.value;
+closeMenu();
+renderPicker(p);
+scheduleSave(true);
+}
+});
+document.body.appendChild(menu);
+placeFloating(menu, trigger);
+trigger.setAttribute('aria-expanded', 'true');
+openMenu = { key: p.key, menu, trigger };
+}
+
+/* ---------- Календарь ---------- */
+function renderDate(p) {
+const root = controls.get(p.key);
+const value = editor.values[p.key] || '';
+const ok = isIso(value);
+root.classList.add('pill-select');
+root.innerHTML = `
+<button class="pill-trigger date-trigger" type="button" aria-haspopup="dialog" aria-expanded="false">
+${value
+? `<span class="date-value${ok ? '' : ' legacy'}">${esc(ok ? fmtDate(value) : value)}</span>`
+: '<span class="pill-placeholder">Выбрать дату</span>'}
+<span class="pill-chevron">▾</span>
+</button>
+`;
+root.querySelector('button').addEventListener('click', event => {
+event.stopPropagation();
+openCalendar(p, root);
+});
+}
+function openCalendar(p, root) {
+if (openMenu && openMenu.key === p.key) {
+closeMenu();
+return;
+}
+closeMenu();
+const trigger = root.querySelector('.pill-trigger');
+const current = editor.values[p.key] || '';
+const today = new Date();
+const todayIso = isoOf(today.getFullYear(), today.getMonth(), today.getDate());
+const view = isIso(current)
+? { y: +current.slice(0, 4), m: +current.slice(5, 7) - 1 }
+: { y: today.getFullYear(), m: today.getMonth() };
+const menu = document.createElement('div');
+menu.className = 'cal-pop';
+menu.setAttribute('role', 'dialog');
+document.body.appendChild(menu);
+const draw = () => {
+const offset = (new Date(view.y, view.m, 1).getDay() + 6) % 7;
+const days = new Date(view.y, view.m + 1, 0).getDate();
+let cells = '<span class="cal-empty"></span>'.repeat(offset);
+for (let d = 1; d <= days; d++) {
+const iso = isoOf(view.y, view.m, d);
+cells += `<button type="button" class="cal-day${iso === current ? ' selected' : ''}${iso === todayIso ? ' today' : ''}" data-iso="${iso}">${d}</button>`;
+}
+menu.innerHTML = `
+<div class="cal-head">
+<button type="button" class="cal-nav" data-nav="-1" aria-label="Предыдущий месяц">‹</button>
+<span class="cal-title">${MONTHS[view.m]} ${view.y}</span>
+<button type="button" class="cal-nav" data-nav="1" aria-label="Следующий месяц">›</button>
+</div>
+<div class="cal-week">${WEEKDAYS.map(d => `<span>${d}</span>`).join('')}</div>
+<div class="cal-grid">${cells}</div>
+<div class="cal-foot">
+<button type="button" class="cal-link" data-iso="">Очистить</button>
+<button type="button" class="cal-link" data-iso="${todayIso}">Сегодня</button>
+</div>
+`;
+};
+// Один обработчик на всё меню: после перерисовки старые кнопки
+// исчезают из DOM, и клик не должен закрывать календарь.
+menu.addEventListener('click', event => {
+event.stopPropagation();
+const nav = event.target.closest('[data-nav]');
+if (nav) {
+view.m += Number(nav.dataset.nav);
+if (view.m < 0) { view.m = 11; view.y--; }
+if (view.m > 11) { view.m = 0; view.y++; }
+draw();
+return;
+}
+const pick = event.target.closest('[data-iso]');
+if (pick) {
+editor.values[p.key] = pick.dataset.iso;
+closeMenu();
+renderDate(p);
+scheduleSave(true);
+}
+});
+draw();
+placeFloating(menu, trigger);
+trigger.setAttribute('aria-expanded', 'true');
+openMenu = { key: p.key, menu, trigger };
+}
+function closeMenu() {
+if (!openMenu) return;
+openMenu.menu.remove();
+if (openMenu.trigger?.isConnected) {
+openMenu.trigger.setAttribute('aria-expanded', 'false');
+}
+openMenu = null;
+}
+
+/* ---------- Редактор текста ---------- */
+function onRichInput() {
+editor.values['коммент'] = richCanon(rich.innerHTML);
+syncRichEmpty();
+scheduleSave(false);
+}
+function updateToolbar() {
+if (!editor.open) return;
+const sel = window.getSelection();
+const inside = !!(sel && sel.anchorNode && rich.contains(sel.anchorNode));
+document.querySelectorAll('#richToolbar [data-cmd]').forEach(button => {
+let on = false;
+if (inside) {
+try { on = document.queryCommandState(button.dataset.cmd); } catch (e) { /* не критично */ }
+}
+button.classList.toggle('active', on);
+});
+}
+function runCommand(cmd) {
+const sel = window.getSelection();
+if (!sel || !sel.anchorNode || !rich.contains(sel.anchorNode)) rich.focus();
+try { document.execCommand(cmd, false, null); } catch (e) { return; }
+onRichInput();
+updateToolbar();
+}
+try {
+document.execCommand('defaultParagraphSeparator', false, 'div');
+document.execCommand('styleWithCSS', false, false);
+} catch (e) { /* не критично */ }
+// Кнопки не отнимают у текста фокус и выделение.
+$('richToolbar').addEventListener('mousedown', event => {
+if (event.target.closest('[data-cmd],[data-task-link]')) event.preventDefault();
+});
+$('richToolbar').addEventListener('click', event => {
+const button = event.target.closest('[data-cmd]');
+if (button) runCommand(button.dataset.cmd);
+});
+rich.addEventListener('input', onRichInput);
+// Вставка только как обычный текст: чужая разметка в редактор не попадает.
+// После вставки и по пробелу/Enter пытаемся превратить URL в ссылку.
+rich.addEventListener('paste', event => {
+event.preventDefault();
+const text = (event.clipboardData || window.clipboardData).getData('text/plain');
+document.execCommand('insertText', false, text);
+// Если вставили один URL целиком — сразу делаем ссылку.
+const one = String(text || '').trim();
+const asUrl = linkUrlOrNull(one);
+if (asUrl && !/\s/.test(one)) {
+  try {
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount) {
+      const r = sel.getRangeAt(0);
+      // выделяем только что вставленный текст назад
+      if (r.collapsed) {
+        const node = r.startContainer;
+        if (node && node.nodeType === 3) {
+          const from = Math.max(0, r.startOffset - one.length);
+          r.setStart(node, from);
+          sel.removeAllRanges();
+          sel.addRange(r);
+          document.execCommand('createLink', false, asUrl);
+          sel.collapseToEnd();
+        }
+      }
+    }
+  } catch (e) { /* не критично */ }
+}
+onRichInput();
+});
+rich.addEventListener('drop', event => event.preventDefault());
+document.addEventListener('selectionchange', updateToolbar);
+
+/* ---------- Ссылки в описании задачи ---------- */
+const taskNormLinkText = s => String(s ?? '').replace(/\s+/g, ' ').trim();
+
+// Регулярка «похоже на URL» в конце текстового узла (без пробелов внутри).
+const URL_TAIL_RE = /(?:https?:\/\/|www\.)[^\s<>"'`]+$/i;
+const BARE_DOMAIN_RE = /(?:^|[\s([{"'])([a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+)([\/?#][^\s<>"'`]*)?$/i;
+
+function taskLinkEls() {
+  const f = editor.linkForm || $('taskLinkForm');
+  if (!f) return null;
+  editor.linkForm = f;
+  return {
+    form: f,
+    title: f.querySelector('.link-form-title'),
+    text: f.querySelector('#taskLinkText'),
+    url: f.querySelector('#taskLinkUrl'),
+    error: f.querySelector('#taskLinkError'),
+    ok: f.querySelector('[data-task-link-ok]')
+  };
+}
+function taskSelectionRange() {
+  const sel = window.getSelection();
+  if (!rich || !sel || !sel.rangeCount) return null;
+  const r = sel.getRangeAt(0);
+  return rich.contains(r.commonAncestorContainer) ? r.cloneRange() : null;
+}
+function restoreTaskRange(range) {
+  if (!rich) return null;
+  rich.focus();
+  let r = range;
+  if (!r || !rich.contains(r.commonAncestorContainer)) {
+    r = document.createRange();
+    r.selectNodeContents(rich);
+    r.collapse(false);
+  }
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(r);
+  return r;
+}
+function openTaskLinkForm(anchor) {
+  const els = taskLinkEls();
+  if (!els || !rich) return;
+  closeMenu();
+  if (!els.form.hidden && !anchor) { els.text.focus(); return; }
+  let range = null;
+  let textVal = '';
+  let url = '';
+  if (anchor && rich.contains(anchor)) {
+    range = document.createRange();
+    range.selectNodeContents(anchor);
+    textVal = anchor.textContent;
+    url = anchor.getAttribute('href') || '';
+  } else {
+    anchor = null;
+    range = taskSelectionRange();
+    textVal = range ? taskNormLinkText(range.toString()) : '';
+  }
+  editor.linkAnchor = anchor;
+  editor.linkRange = range;
+  els.title.textContent = anchor ? 'Изменить ссылку' : 'Вставить ссылку';
+  els.ok.textContent = anchor ? 'Сохранить' : 'Вставить';
+  els.text.value = textVal;
+  els.url.value = url;
+  els.error.hidden = true;
+  els.form.hidden = false;
+  (textVal ? els.url : els.text).focus();
+}
+function hideTaskLinkForm() {
+  const els = taskLinkEls();
+  if (els) els.form.hidden = true;
+  editor.linkRange = null;
+  editor.linkAnchor = null;
+}
+function cancelTaskLink() {
+  const range = editor.linkRange;
+  hideTaskLinkForm();
+  restoreTaskRange(range);
+}
+function applyTaskLink(anchor, range, label, url) {
+  if (anchor && rich.contains(anchor)) {
+    anchor.setAttribute('href', url);
+    if (anchor.textContent !== label) anchor.textContent = label;
+    const after = document.createRange();
+    after.setStartAfter(anchor);
+    after.collapse(true);
+    rich.focus();
+    const s = window.getSelection();
+    s.removeAllRanges();
+    s.addRange(after);
+    return;
+  }
+  const r = restoreTaskRange(range);
+  const sel = window.getSelection();
+  const collapsed = !r || r.collapsed;
+  const keepFormat = !collapsed && taskNormLinkText(r.toString()) === label;
+  let done = false;
+  try {
+    done = keepFormat
+      ? document.execCommand('createLink', false, url)
+      : document.execCommand('insertHTML', false,
+          '<a href="' + escAttr(url) + '">' + escText(label) + '</a>' + (collapsed ? '&nbsp;' : ''));
+  } catch (e) {
+    done = false;
+  }
+  if (!done && r) {
+    const a = document.createElement('a');
+    a.setAttribute('href', url);
+    a.textContent = label;
+    r.deleteContents();
+    r.insertNode(a);
+    const after = document.createRange();
+    after.setStartAfter(a);
+    after.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(after);
+  } else if (keepFormat && sel.rangeCount) {
+    sel.collapseToEnd();
+  }
+}
+function confirmTaskLink() {
+  const els = taskLinkEls();
+  if (!els || els.form.hidden) return;
+  const url = linkUrlOrNull(els.url.value);
+  if (!url) {
+    els.error.textContent = 'Нужна корректная ссылка: http:\\u002f\\u002f, https:\\u002f\\u002f или адрес вида example.com. Другие схемы (например, javascript:) не разрешены.';
+    els.error.hidden = false;
+    els.url.focus();
+    return;
+  }
+  const label = taskNormLinkText(els.text.value) || url;
+  const anchor = editor.linkAnchor;
+  const range = editor.linkRange;
+  hideTaskLinkForm();
+  applyTaskLink(anchor, range, label, url);
+  onRichInput();
+}
+function unlinkTaskAnchor(anchor) {
+  const parent = anchor.parentNode;
+  if (!parent) return;
+  while (anchor.firstChild) parent.insertBefore(anchor.firstChild, anchor);
+  parent.removeChild(anchor);
+  onRichInput();
+}
+function showTaskLinkPopover(anchor) {
+  closeMenu();
+  const href = anchor.getAttribute('href') || '';
+  const safe = safeLinkHref(href);
+  const menu = document.createElement('div');
+  menu.className = 'pill-menu link-pop';
+  menu.innerHTML = `
+<a class="link-pop-url"${safe ? ` href="${esc(safe)}" target="_blank" rel="noopener noreferrer"` : ''}>${esc(href)}</a>
+<div class="link-pop-actions">
+<button type="button" class="mini text" data-lp="edit">Изменить</button>
+<button type="button" class="mini text" data-lp="remove">Убрать ссылку</button>
+</div>
+`;
+  menu.addEventListener('click', event => {
+    if (event.target.closest('.link-pop-url')) { setTimeout(closeMenu, 0); return; }
+    const act = event.target.closest('[data-lp]');
+    if (!act) return;
+    closeMenu();
+    if (act.dataset.lp === 'edit') openTaskLinkForm(anchor);
+    else unlinkTaskAnchor(anchor);
+  });
+  document.body.appendChild(menu);
+  placeFloating(menu, anchor);
+  openMenu = { key: '__tasklink', menu, trigger: anchor };
+}
+
+/** Автоссылка: если перед курсором лежит URL в текстовом узле (не внутри <a>), превращаем его в <a>. */
+function autoLinkBeforeCaret() {
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount || !sel.isCollapsed) return false;
+  const r = sel.getRangeAt(0);
+  let node = r.startContainer;
+  if (!node || !rich.contains(node)) return false;
+  // если уже внутри ссылки — ничего не делаем
+  let p = node.nodeType === 3 ? node.parentNode : node;
+  while (p && p !== rich) {
+    if (p.nodeName === 'A') return false;
+    p = p.parentNode;
+  }
+  if (node.nodeType !== 3) return false;
+  const text = node.nodeValue || '';
+  const offset = r.startOffset;
+  const left = text.slice(0, offset);
+  // ищем URL в конце левой части
+  let match = URL_TAIL_RE.exec(left);
+  let raw = match ? match[0] : '';
+  // обрезаем хвостовую пунктуацию
+  if (raw) {
+    raw = raw.replace(/[.,;:!?)]+$/, '');
+  }
+  if (!raw) {
+    // пробуем голый домен example.com/path
+    const m2 = BARE_DOMAIN_RE.exec(left);
+    if (m2) {
+      raw = (m2[1] + (m2[2] || '')).replace(/[.,;:!?)]+$/, '');
+    }
+  }
+  if (!raw || raw.length < 4) return false;
+  const url = linkUrlOrNull(raw);
+  if (!url) return false;
+  const start = offset - raw.length;
+  if (start < 0) return false;
+  try {
+    const range = document.createRange();
+    range.setStart(node, start);
+    range.setEnd(node, offset);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    const ok = document.execCommand('createLink', false, url);
+    if (ok) {
+      sel.collapseToEnd();
+      return true;
+    }
+    // fallback
+    const a = document.createElement('a');
+    a.setAttribute('href', url);
+    a.textContent = raw;
+    range.deleteContents();
+    range.insertNode(a);
+    const after = document.createRange();
+    after.setStartAfter(a);
+    after.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(after);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function bindTaskLinkUi() {
+  const form = $('taskLinkForm');
+  if (form && form.dataset.bound !== '1') {
+    form.dataset.bound = '1';
+    editor.linkForm = form;
+    form.addEventListener('click', event => {
+      if (event.target.closest('[data-task-link-ok]')) confirmTaskLink();
+      else if (event.target.closest('[data-task-link-cancel]')) cancelTaskLink();
+    });
+    form.addEventListener('keydown', event => {
+      if (event.key === 'Enter') { event.preventDefault(); confirmTaskLink(); }
+      else if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        cancelTaskLink();
+      }
+    });
+    form.addEventListener('input', () => {
+      const els = taskLinkEls();
+      if (els) els.error.hidden = true;
+    });
+  }
+  const linkBtn = $('richToolbar') && $('richToolbar').querySelector('[data-task-link]');
+  if (linkBtn && linkBtn.dataset.bound !== '1') {
+    linkBtn.dataset.bound = '1';
+    linkBtn.addEventListener('click', () => openTaskLinkForm(null));
+  }
+  if (rich && rich.dataset.linkBound !== '1') {
+    rich.dataset.linkBound = '1';
+    rich.addEventListener('keydown', event => {
+      if ((event.ctrlKey || event.metaKey) && event.code === 'KeyK') {
+        event.preventDefault();
+        openTaskLinkForm(null);
+        return;
+      }
+      // пробел / Enter — пробуем автоссылку перед кареткой
+      if (event.key === ' ' || event.key === 'Enter') {
+        if (autoLinkBeforeCaret()) onRichInput();
+      }
+    });
+    rich.addEventListener('click', event => {
+      const a = event.target.closest ? event.target.closest('a') : null;
+      if (a && rich.contains(a)) {
+        event.preventDefault();
+        showTaskLinkPopover(a);
+      }
+    });
+  }
+}
+
+
+/* ---------- Экспорт (этап 4) ---------- */
+// Выгрузка целиком строится в браузере из уже загруженных задач и ничего
+// не записывает ни в таблицу, ни в свойства скрипта.
+// Внешних библиотек нет: XLSX собирается вручную (ZIP без сжатия + XML).
+// <export-core>
+const Q = String.fromCharCode(63); // '?'
+const XML_HEAD = '<' + Q + 'xml version="1.0" encoding="UTF-8" standalone="yes"' + Q + '>';
+const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+// Из безопасного HTML описания (теги b, i, u, s, ul, ol, li, div, br) делает обычный текст:
+// строки сохраняются, списки превращаются в «• пункт» и «1. пункт».
+function htmlToText(html) {
+const lines = [];
+const stack = [];
+let cur = '';
+let href = '';
+let linkStart = 0;
+const flush = () => { lines.push(cur); cur = ''; };
+const re = /<(\/?)(ul|ol|li|div|br|b|i|u|s|a)(?:\s[^>]*){0,1}>|([^<]+)/g;
+let m;
+while ((m = re.exec(html))) {
+if (m[3] !== undefined) { cur += m[3]; continue; }
+const closing = m[1] === '/';
+const tag = m[2];
+if (tag === 'br') {
+if (!closing) flush();
+} else if (tag === 'a') {
+if (!closing) {
+const hm = /href="([^"]*)"/.exec(m[0]);
+href = hm ? hm[1] : '';
+linkStart = cur.length;
+} else if (href) {
+if (cur.slice(linkStart) !== href) cur += ' (' + href + ')';
+href = '';
+}
+} else if (tag === 'div') {
+if (cur) flush();
+} else if (tag === 'ul' || tag === 'ol') {
+if (cur) flush();
+if (closing) stack.pop();
+else stack.push({ tag, n: 0 });
+} else if (tag === 'li') {
+if (cur) flush();
+if (!closing) {
+const top = stack[stack.length - 1];
+if (top) top.n++;
+cur = '  '.repeat(Math.max(0, stack.length - 1)) + (top && top.tag === 'ol' ? top.n + '. ' : '• ');
+}
+}
+}
+if (cur) flush();
+return lines.join('\n')
+.replace(/&nbsp;/g, ' ')
+.replace(/&lt;/g, '<')
+.replace(/&gt;/g, '>')
+.replace(/&quot;/g, '"')
+.replace(/&amp;/g, '&')
+.replace(/\n+$/, '');
+}
+function richToText(value) {
+const s = String(value ?? '');
+if (!s.trim()) return '';
+if (!HAS_TAGS.test(s)) return s.replace(/\r\n?/g, '\n');
+return htmlToText(toSafeHtml(s));
+}
+function excelSerial(iso) {
+return Math.round(Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10)) / 86400000) + 25569;
+}
+// Ячейка выгрузки: k — тип (text | number | date), v — значение для XLSX, s — текст для CSV.
+function exportCell(p, task) {
+const raw = String(task[p.key] ?? '');
+if (p.type === 'longtext') {
+const t = richToText(raw);
+return { k: 'text', v: t, s: t };
+}
+// Дата — настоящая дата в XLSX; нераспознанный текст остаётся текстом.
+if (p.type === 'date' && isIso(raw)) return { k: 'date', v: excelSerial(raw), s: fmtDate(raw) };
+if (p.type === 'id' && /^\d{1,15}$/.test(raw.trim())) {
+return { k: 'number', v: Number(raw.trim()), s: raw.trim() };
+}
+return { k: 'text', v: raw, s: raw };
+}
+function buildExportTable(list, fields) {
+return {
+headers: fields.map(p => p.title),
+rows: list.map(task => fields.map(p => exportCell(p, task)))
+};
+}
+function toCsv(table, delimiter) {
+const q = value => {
+const s = String(value);
+return s.includes('"') || s.includes(delimiter) || /[\r\n]/.test(s)
+? '"' + s.replace(/"/g, '""') + '"'
+: s;
+};
+const lines = [table.headers.map(q).join(delimiter)];
+table.rows.forEach(row => lines.push(row.map(c => q(c.s)).join(delimiter)));
+// BOM нужен, чтобы Excel открыл кириллицу в UTF-8 правильно.
+return String.fromCharCode(0xFEFF) + lines.join('\r\n') + '\r\n';
+}
+// Недопустимые в XML и в именах файлов управляющие символы собираем из кодов,
+// чтобы в тексте скрипта не было экранированных \u-последовательностей.
+const XML_BAD_CHARS = new RegExp('[' + String.fromCharCode(0) + '-' + String.fromCharCode(8) + String.fromCharCode(11) + String.fromCharCode(12) + String.fromCharCode(14) + '-' + String.fromCharCode(31) + String.fromCharCode(0xFFFE) + String.fromCharCode(0xFFFF) + ']', 'g');
+const FILE_BAD_CHARS = new RegExp('[\\\\/:*' + String.fromCharCode(63) + '"<>|' + String.fromCharCode(0) + '-' + String.fromCharCode(31) + ']', 'g');
+function xmlEsc(s) {
+return String(s)
+.replace(XML_BAD_CHARS, '')
+.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function colName(index) {
+let s = '';
+for (let n = index + 1; n > 0; n = Math.floor((n - 1) / 26)) {
+s = String.fromCharCode(65 + (n - 1) % 26) + s;
+}
+return s;
+}
+const CRC_TABLE = (() => {
+const t = new Uint32Array(256);
+for (let n = 0; n < 256; n++) {
+let c = n;
+for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+t[n] = c >>> 0;
+}
+return t;
+})();
+function crc32(bytes) {
+let c = 0xFFFFFFFF;
+for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 255] ^ (c >>> 8);
+return (c ^ 0xFFFFFFFF) >>> 0;
+}
+// ZIP без сжатия (метод «store»): для XLSX этого достаточно.
+function zipStore(files, mime) {
+const enc = new TextEncoder();
+const parts = [];
+const central = [];
+const now = new Date();
+const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1);
+const dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+let offset = 0;
+files.forEach(f => {
+const name = enc.encode(f.name);
+const data = enc.encode(f.text);
+const crc = crc32(data);
+const local = new DataView(new ArrayBuffer(30));
+local.setUint32(0, 0x04034b50, true);
+local.setUint16(4, 20, true);
+local.setUint16(6, 0x0800, true);
+local.setUint16(8, 0, true);
+local.setUint16(10, dosTime, true);
+local.setUint16(12, dosDate, true);
+local.setUint32(14, crc, true);
+local.setUint32(18, data.length, true);
+local.setUint32(22, data.length, true);
+local.setUint16(26, name.length, true);
+local.setUint16(28, 0, true);
+parts.push(new Uint8Array(local.buffer), name, data);
+const cen = new DataView(new ArrayBuffer(46));
+cen.setUint32(0, 0x02014b50, true);
+cen.setUint16(4, 20, true);
+cen.setUint16(6, 20, true);
+cen.setUint16(8, 0x0800, true);
+cen.setUint16(10, 0, true);
+cen.setUint16(12, dosTime, true);
+cen.setUint16(14, dosDate, true);
+cen.setUint32(16, crc, true);
+cen.setUint32(20, data.length, true);
+cen.setUint32(24, data.length, true);
+cen.setUint16(28, name.length, true);
+cen.setUint16(30, 0, true);
+cen.setUint16(32, 0, true);
+cen.setUint16(34, 0, true);
+cen.setUint16(36, 0, true);
+cen.setUint32(38, 0, true);
+cen.setUint32(42, offset, true);
+central.push(new Uint8Array(cen.buffer), name);
+offset += 30 + name.length + data.length;
+});
+const centralSize = central.reduce((sum, c) => sum + c.length, 0);
+const end = new DataView(new ArrayBuffer(22));
+end.setUint32(0, 0x06054b50, true);
+end.setUint16(4, 0, true);
+end.setUint16(6, 0, true);
+end.setUint16(8, files.length, true);
+end.setUint16(10, files.length, true);
+end.setUint32(12, centralSize, true);
+end.setUint32(16, offset, true);
+end.setUint16(20, 0, true);
+return new Blob([...parts, ...central, new Uint8Array(end.buffer)], { type: mime });
+}
+function buildXlsx(table, title) {
+const sheetTitle = String(title || '').replace(/[\[\]:*?\/\\]/g, ' ').trim().slice(0, 31) || 'Задачи';
+const widths = table.headers.map((h, i) => {
+let max = h.length;
+table.rows.forEach(row => {
+String(row[i].s).split('\n').forEach(line => { if (line.length > max) max = line.length; });
+});
+return Math.min(60, Math.max(8, Math.ceil(max * 1.1) + 2));
+});
+const textCell = (ref, text, style) =>
+`<c r="${ref}"${style ? ` s="${style}"` : ''} t="inlineStr"><is><t xml:space="preserve">${xmlEsc(text)}</t></is></c>`;
+const rows = [];
+rows.push('<row r="1">' + table.headers.map((h, i) => textCell(colName(i) + '1', h, 1)).join('') + '</row>');
+table.rows.forEach((row, ri) => {
+const r = ri + 2;
+const cells = row.map((cell, ci) => {
+const ref = colName(ci) + r;
+if (cell.k === 'number') return `<c r="${ref}"><v>${cell.v}</v></c>`;
+if (cell.k === 'date') return `<c r="${ref}" s="2"><v>${cell.v}</v></c>`;
+if (cell.v === '') return '';
+return textCell(ref, cell.v, cell.v.includes('\n') ? 3 : 0);
+}).join('');
+rows.push(`<row r="${r}">${cells}</row>`);
+});
+const ns = 'http:\u002f\u002fschemas.openxmlformats.org/spreadsheetml/2006/main';
+const rel = 'http:\u002f\u002fschemas.openxmlformats.org/officeDocument/2006/relationships';
+const sheet = XML_HEAD +
+`<worksheet xmlns="${ns}">` +
+'<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>' +
+'<cols>' + widths.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join('') + '</cols>' +
+'<sheetData>' + rows.join('') + '</sheetData></worksheet>';
+const styles = XML_HEAD +
+`<styleSheet xmlns="${ns}">` +
+'<numFmts count="1"><numFmt numFmtId="164" formatCode="dd\\.mm\\.yyyy"/></numFmts>' +
+'<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>' +
+'<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>' +
+'<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>' +
+'<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+'<cellXfs count="4">' +
+'<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
+'<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +
+'<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment horizontal="left"/></xf>' +
+'<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>' +
+'</cellXfs>' +
+'<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>' +
+'</styleSheet>';
+const workbook = XML_HEAD +
+`<workbook xmlns="${ns}" xmlns:r="${rel}"><sheets><sheet name="${xmlEsc(sheetTitle)}" sheetId="1" r:id="rId1"/></sheets></workbook>`;
+const workbookRels = XML_HEAD +
+'<Relationships xmlns="http:\u002f\u002fschemas.openxmlformats.org/package/2006/relationships">' +
+`<Relationship Id="rId1" Type="${rel}/worksheet" Target="worksheets/sheet1.xml"/>` +
+`<Relationship Id="rId2" Type="${rel}/styles" Target="styles.xml"/>` +
+'</Relationships>';
+const rootRels = XML_HEAD +
+'<Relationships xmlns="http:\u002f\u002fschemas.openxmlformats.org/package/2006/relationships">' +
+`<Relationship Id="rId1" Type="${rel}/officeDocument" Target="xl/workbook.xml"/>` +
+'</Relationships>';
+const types = XML_HEAD +
+'<Types xmlns="http:\u002f\u002fschemas.openxmlformats.org/package/2006/content-types">' +
+'<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+'<Default Extension="xml" ContentType="application/xml"/>' +
+'<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
+'<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
+'<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' +
+'</Types>';
+return zipStore([
+{ name: '[Content_Types].xml', text: types },
+{ name: '_rels/.rels', text: rootRels },
+{ name: 'xl/workbook.xml', text: workbook },
+{ name: 'xl/_rels/workbook.xml.rels', text: workbookRels },
+{ name: 'xl/styles.xml', text: styles },
+{ name: 'xl/worksheets/sheet1.xml', text: sheet }
+], XLSX_MIME);
+}
+// </export-core>
+function downloadBlob(blob, fileName) {
+const url = URL.createObjectURL(blob);
+const a = document.createElement('a');
+a.href = url;
+a.download = fileName;
+document.body.appendChild(a);
+a.click();
+a.remove();
+setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+const safeFileName = s => String(s || '').replace(FILE_BAD_CHARS, '').replace(/\s+/g, ' ').trim().slice(0, 100);
+function defaultExportName() {
+const d = new Date();
+const stamp = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+return safeFileName((sheetName || 'QA Flow') + ' ' + stamp) || 'export';
+}
+function readExportPrefs() {
+try { return JSON.parse(localStorage.getItem(EXPORT_KEY) || '{}') || {}; } catch (e) { return {}; }
+}
+function writeExportPrefs(prefs) {
+try { localStorage.setItem(EXPORT_KEY, JSON.stringify(prefs)); } catch (e) { /* не критично */ }
+}
+// Какие задачи попадут в выгрузку: условия + порядок как на доске (сортировка черновика).
+const exportList = f => sortTasks(tasks.filter(t => matchTask(t, f)));
+function runExport(list, fields, opts) {
+const table = buildExportTable(list, fields);
+if (opts.format === 'csv') {
+const blob = new Blob([toCsv(table, opts.delimiter)], { type: 'text/csv;charset=utf-8' });
+downloadBlob(blob, opts.name + '.csv');
+} else {
+downloadBlob(buildXlsx(table, sheetName), opts.name + '.xlsx');
+}
+showNotice(`Выгружено: задач ${list.length}, свойств ${fields.length}`);
+}
+function openExport() {
+closeMenu();
+const prefs = readExportPrefs();
+const keys = schema.map(p => p.key);
+const savedFields = Array.isArray(prefs.fields) ? prefs.fields.filter(k => keys.includes(k)) : [];
+const ex = {
+filters: normFilters(clone(draft.filters)),
+fields: new Set(savedFields.length ? savedFields : keys),
+format: prefs.format === 'csv' ? 'csv' : 'xlsx',
+delimiter: prefs.delimiter === ',' ? ',' : ';'
+};
+const m = showModal({
+title: 'Экспорт задач',
+width: 720,
+body: `
+<div class="ex-section">
+<div class="section-title">
+<span>Какие задачи выгрузить</span>
+<span class="ex-links">
+<button type="button" class="link-btn" data-ex="board">Как на доске</button>
+<button type="button" class="link-btn" data-ex="clear">Все задачи</button>
+</span>
+</div>
+<input id="exSearch" class="field small" autocomplete="off" placeholder="Поиск по тексту…" value="${esc(ex.filters.search)}">
+<div id="exFilters" class="ex-filters"></div>
+<div id="exCount" class="ex-count"></div>
+</div>
+<div class="ex-section">
+<div class="section-title">
+<span>Свойства в файле</span>
+<span class="ex-links">
+<button type="button" class="link-btn" data-ex="fields-all">Все</button>
+<button type="button" class="link-btn" data-ex="fields-none">Снять все</button>
+</span>
+</div>
+<div class="check-grid">${schema.map(p => `
+<label class="check">
+<input type="checkbox" data-ex-field="${esc(p.key)}"${ex.fields.has(p.key) ? ' checked' : ''}>
+<span>${esc(p.title)}</span>
+</label>`).join('')}
+</div>
+<p class="m-hint">Столбцы идут в том же порядке, что и в таблице.</p>
+</div>
+<div class="ex-section">
+<div class="section-title"><span>Файл</span></div>
+<div class="ex-format">
+<label class="check"><input type="radio" name="exFormat" value="xlsx"${ex.format === 'xlsx' ? ' checked' : ''}> XLSX (Excel)</label>
+<label class="check"><input type="radio" name="exFormat" value="csv"${ex.format === 'csv' ? ' checked' : ''}> CSV</label>
+<select id="exDelim" class="field small" aria-label="Разделитель CSV"${ex.format === 'csv' ? '' : ' disabled'}>
+<option value=";"${ex.delimiter === ';' ? ' selected' : ''}>Разделитель «;» (для русского Excel)</option>
+<option value=","${ex.delimiter === ',' ? ' selected' : ''}>Разделитель «,»</option>
+</select>
+</div>
+<input id="exName" class="field small" autocomplete="off" maxlength="100" aria-label="Имя файла" value="${esc(defaultExportName())}">
+</div>
+`,
+actions: [
+{ label: 'Отмена', value: false },
+{
+label: '⇩ Скачать', kind: 'primary', value: true,
+onClick: () => {
+const fields = schema.filter(p => ex.fields.has(p.key));
+const list = exportList(ex.filters);
+if (!fields.length) { showNotice('Выбери хотя бы одно свойство для выгрузки.', true); return false; }
+if (!list.length) { showNotice('Под эти условия не подходит ни одной задачи.', true); return false; }
+const name = safeFileName(m.body.querySelector('#exName').value) || defaultExportName();
+writeExportPrefs({ fields: [...ex.fields], format: ex.format, delimiter: ex.delimiter });
+runExport(list, fields, { format: ex.format, delimiter: ex.delimiter, name });
+}
+}
+]
+});
+const body = m.body;
+const updateCount = () => {
+const n = exportList(ex.filters).length;
+const el = body.querySelector('#exCount');
+el.innerHTML = `Подходит задач: <strong>${n}</strong> из ${tasks.length}` +
+(lastSyncAt ? ` · данные на ${esc(lastSyncAt)}` : '');
+el.classList.toggle('zero', n === 0);
+};
+const renderFilters = mountFilterEditor(body.querySelector('#exFilters'), () => ex.filters, updateCount);
+const syncFields = () => {
+body.querySelectorAll('[data-ex-field]').forEach(input => {
+input.checked = ex.fields.has(input.dataset.exField);
+});
+};
+const resetFilters = () => {
+body.querySelector('#exSearch').value = ex.filters.search;
+renderFilters();
+updateCount();
+};
+body.addEventListener('input', event => {
+if (event.target.id !== 'exSearch') return;
+ex.filters.search = event.target.value;
+updateCount();
+});
+body.addEventListener('change', event => {
+const target = event.target;
+if (target.matches('[data-ex-field]')) {
+if (target.checked) ex.fields.add(target.dataset.exField);
+else ex.fields.delete(target.dataset.exField);
+} else if (target.matches('input[name="exFormat"]')) {
+ex.format = target.value === 'csv' ? 'csv' : 'xlsx';
+body.querySelector('#exDelim').disabled = ex.format !== 'csv';
+} else if (target.id === 'exDelim') {
+ex.delimiter = target.value === ',' ? ',' : ';';
+}
+});
+body.addEventListener('click', event => {
+const button = event.target.closest('[data-ex]');
+if (!button) return;
+const act = button.dataset.ex;
+if (act === 'board') {
+ex.filters = normFilters(clone(draft.filters));
+resetFilters();
+} else if (act === 'clear') {
+ex.filters = blankFilters();
+resetFilters();
+} else if (act === 'fields-all') {
+schema.forEach(p => ex.fields.add(p.key));
+syncFields();
+} else if (act === 'fields-none') {
+ex.fields.clear();
+syncFields();
+}
+});
+updateCount();
+}
+
+/* ---------- База знаний (этап 5) ---------- */
+function loadKnowledge(sectionId) {
+const token = ++knowledgeToken;
+setSync('Синхронизация…', 'saving');
+gs('getKnowledgeData', sectionId)
+.then(data => {
+// Ответ устарел: пользователь уже перешёл в другую базу знаний или на доску.
+if (token !== knowledgeToken) return;
+if (activeSection.type !== 'knowledge' || Number(data.sectionId) !== activeSection.id) return;
+knowledgeData = data;
+knowledgeArticles = data.articles || [];
+renderKnowledge();
+lastSyncAt = timeNow();
+setSync('Обновлено в ' + lastSyncAt, 'ok');
+})
+.catch(error => {
+if (token !== knowledgeToken) return;
+handleError(error);
+// Данных этой базы на экране ещё нет: показываем ошибку и повтор вместо вечной загрузки.
+if (!knowledgeData || Number(knowledgeData.sectionId) !== Number(sectionId)) {
+$('knowledgeBoard').innerHTML = `<div class="loading">Не удалось загрузить базу знаний: ${esc(errText(error))} <button class="btn small" type="button" data-kn-retry>Повторить</button></div>`;
+}
+});
+}
+function renderKnowledge() {
+if (!knowledgeData) return;
+
+$('knowledgeTitle').textContent = knowledgeData.sectionName || 'База знаний';
+const q = knowledgeSearch.trim().toLocaleLowerCase('ru');
+const list = knowledgeArticles.filter(a => {
+if (!q) return true;
+return (a.title || '').toLocaleLowerCase('ru').includes(q) ||
+richPlain(a.content || '').toLocaleLowerCase('ru').includes(q) ||
+(a.labels || '').toLocaleLowerCase('ru').includes(q);
+});
+
+$('knowledgeStats').innerHTML = `
+<div class="stat">Статей <strong>${knowledgeArticles.length}</strong></div>
+<div class="stat">По поиску <strong>${list.length}</strong></div>
+`;
+
+$('knowledgeBoard').innerHTML = list.length
+? list.map(knowledgeCardHtml).join('')
+: '<div class="empty">Нет статей. Нажми «＋ Статья».</div>';
+}
+function knowledgeCardHtml(article) {
+const excerpt = richPlain(article.content || '').replace(/\s+/g, ' ').trim();
+const short = excerpt.length > 160 ? excerpt.slice(0, 160) + '…' : excerpt;
+return `
+<article class="knowledge-card" data-kn-id="${esc(article._id)}">
+<div class="knowledge-card-title">${esc(article.title || 'Без заголовка')}</div>
+<div class="knowledge-card-excerpt">${esc(short || 'Пустая статья')}</div>
+<div class="knowledge-card-meta">
+<span>${esc(article.updated || '')}</span>
+<span>#${esc(article._row)}</span>
+</div>
+</article>
+`;
+}
+function knDirty() {
+if (!knEditor.open) return false;
+if (knEditor.mode === 'create') return !!knEditor.title;
+const a = knEditor.article;
+return !!a && (
+knEditor.title !== a.title ||
+richCanon(knEditor.content) !== richCanon(a.content)
+);
+}
+function setKnStatus(message, state = '') {
+if (!knEditor.statusEl) return;
+knEditor.statusEl.textContent = message;
+knEditor.statusEl.className = 'save-status' + (state ? ' ' + state : '');
+}
+function syncKnEmpty() {
+if (!knEditor.contentEl) return;
+const empty = !knEditor.contentEl.textContent.trim() && !knEditor.contentEl.querySelector('li');
+knEditor.contentEl.classList.toggle('is-empty', empty);
+}
+function onKnInput() {
+if (!knEditor.contentEl) return;
+knEditor.rev++;
+knEditor.content = richCanon(knEditor.contentEl.innerHTML);
+syncKnEmpty();
+scheduleKnSave(false);
+}
+function scheduleKnSave(immediate = false) {
+clearTimeout(knEditor.timer);
+clearTimeout(knEditor.retry);
+knEditor.retries = 0;
+
+if (knEditor.mode === 'create') {
+if (!knEditor.title) {
+setKnStatus('Введи заголовок — статья создастся автоматически');
+return;
+}
+setKnStatus('Есть несохранённые изменения', 'saving');
+if (immediate) saveKnowledgeEditor();
+else knEditor.timer = setTimeout(saveKnowledgeEditor, 650);
+return;
+}
+
+if (!knDirty()) {
+if (!knEditor.inFlight) setKnStatus('Все изменения сохранены');
+return;
+}
+
+setKnStatus('Есть несохранённые изменения', 'saving');
+if (immediate) saveKnowledgeEditor();
+else knEditor.timer = setTimeout(saveKnowledgeEditor, 650);
+}
+function saveKnowledgeEditor() {
+clearTimeout(knEditor.timer);
+if (!knEditor.open) return;
+if (knEditor.inFlight) return;
+if (!knEditor.title) {
+setKnStatus('Заголовок не может быть пустым', 'error');
+knEditor.closeRequested = false;
+return;
+}
+if (knEditor.mode === 'create') createKnowledgeArticleClient();
+else patchKnowledgeArticleClient();
+}
+// Принимает ответ сервера. Подтверждённое состояние (article) обновляется всегда.
+// Поля редактора меняются только если после отправки запроса пользователь ничего не вводил
+// (rev не изменился) и сервер вернул другое значение (нормализация или конфликт).
+// Если пользователь печатал во время запроса, его текст главнее: он уйдёт следующим запросом,
+// а DOM редактора не трогаем, чтобы не сбить курсор и не потерять символы.
+function adoptKnServer(article, keys, values, conflicts, sentRev) {
+const untouched = sentRev === knEditor.rev;
+keys.forEach(key => {
+const conflict = Object.prototype.hasOwnProperty.call(conflicts, key);
+const server = conflict ? conflicts[key] : values[key];
+if (server === undefined) return;
+article[key] = server;
+if (!untouched) return;
+if (key === 'title') {
+if (knEditor.title === server) return;
+knEditor.title = server;
+if (knEditor.titleEl) knEditor.titleEl.value = server;
+} else if (key === 'content') {
+if (richCanon(knEditor.content) === richCanon(server)) return;   // содержимое то же: DOM не трогаем
+knEditor.content = server;
+if (knEditor.contentEl) {
+knEditor.contentEl.innerHTML = richToHtml(server);
+syncKnEmpty();
+}
+}
+});
+}
+function createKnowledgeArticleClient() {
+const sent = {
+title: knEditor.title,
+content: knEditor.content,
+labels: ''
+};
+const sentRev = knEditor.rev;
+const sectionId = activeSection.id;
+
+knEditor.inFlight = true;
+setKnStatus('Создаю статью…', 'saving');
+beginWrite();
+
+gs('createKnowledgeArticle', sectionId, sent, knEditor.requestId)
+.then(res => {
+endWrite();
+knEditor.inFlight = false;
+const article = res.article;
+knowledgeArticles.push(article);
+knEditor.article = article;
+knEditor.mode = 'edit';
+knEditor.requestId = '';
+adoptKnServer(article, ['title', 'content'], article, {}, sentRev);
+renderKnowledge();
+afterKnSave();
+})
+.catch(error => {
+endWrite(true);
+knEditor.inFlight = false;
+onKnSaveError(error);
+});
+}
+function patchKnowledgeArticleClient() {
+const article = knEditor.article;
+if (!article) return;
+
+const changes = {};
+if (knEditor.title !== article.title) changes.title = knEditor.title;
+if (richCanon(knEditor.content) !== richCanon(article.content)) changes.content = knEditor.content;
+
+const keys = Object.keys(changes);
+if (!keys.length) {
+afterKnSave();
+return;
+}
+
+const sentRev = knEditor.rev;
+const sectionId = activeSection.id;
+const base = {
+title: article.title,
+content: article.content
+};
+
+knEditor.inFlight = true;
+setKnStatus('Сохраняю…', 'saving');
+beginWrite();
+
+gs('saveKnowledgeArticle', sectionId, article._id, changes, base)
+.then(res => {
+endWrite();
+knEditor.inFlight = false;
+
+const conflicts = res.conflicts || {};
+const values = res.values || {};
+
+adoptKnServer(article, keys, values, conflicts, sentRev);
+if (values.updated) article.updated = values.updated;
+
+if (Object.keys(conflicts).length) {
+showNotice('Часть полей изменили вне приложения — показаны актуальные значения.', true);
+}
+
+renderKnowledge();
+afterKnSave();
+})
+.catch(error => {
+endWrite(true);
+knEditor.inFlight = false;
+onKnSaveError(error);   // текст остаётся в редакторе, повтор через 5 с
+});
+}
+function afterKnSave() {
+knEditor.retries = 0;
+if (knDirty()) {
+saveKnowledgeEditor();
+return;
+}
+setKnStatus('Все изменения сохранены');
+if (knEditor.closeRequested) closeKnowledgeEditorNow();
+}
+function onKnSaveError(error) {
+knEditor.closeRequested = false;
+showNotice(errText(error), true);
+if (knEditor.retries < MAX_RETRIES) {
+knEditor.retries++;
+setKnStatus('Ошибка сохранения — повторю автоматически', 'error');
+knEditor.retry = setTimeout(saveKnowledgeEditor, 5000);
+} else {
+setKnStatus('Не удалось сохранить. Проверь соединение и измени поле ещё раз', 'error');
+}
+}
+function closeKnowledgeEditorNow() {
+clearTimeout(knEditor.timer);
+clearTimeout(knEditor.retry);
+const m = knEditor.modal;
+knEditor.open = false;
+knEditor.article = null;
+knEditor.inFlight = false;
+knEditor.closeRequested = false;
+knEditor.modal = null;
+knEditor.titleEl = null;
+knEditor.contentEl = null;
+knEditor.statusEl = null;
+knEditor.linkForm = null;
+knEditor.linkRange = null;
+knEditor.linkAnchor = null;
+closeMenu();
+if (m) m.close(undefined);
+}
+function requestCloseKnowledgeEditor() {
+clearTimeout(knEditor.timer);
+clearTimeout(knEditor.retry);
+if (knEditor.mode === 'create' && !knEditor.title) {
+closeKnowledgeEditorNow();
+return;
+}
+if (knDirty() || knEditor.inFlight) {
+knEditor.closeRequested = true;
+setKnStatus('Сохраняю перед закрытием…', 'saving');
+if (!knEditor.inFlight) saveKnowledgeEditor();
+return;
+}
+closeKnowledgeEditorNow();
+}
+function knToolbarHtml() {
+return `
+<div class="rich-toolbar" id="knToolbar" role="toolbar" aria-label="Форматирование статьи">
+<button type="button" data-cmd="bold" title="Жирный"><b>B</b></button>
+<button type="button" data-cmd="italic" title="Курсив"><i>I</i></button>
+<button type="button" data-cmd="underline" title="Подчёркнутый"><u>U</u></button>
+<button type="button" data-cmd="strikeThrough" title="Зачёркнутый"><s>S</s></button>
+<span class="tb-sep"></span>
+<button type="button" data-cmd="insertUnorderedList" title="Маркированный список">•</button>
+<button type="button" data-cmd="insertOrderedList" title="Нумерованный список">1.</button>
+<span class="tb-sep"></span>
+<button type="button" data-kn-link title="Вставить ссылку (Ctrl+K)" aria-label="Вставить ссылку"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.5 9.5a3 3 0 0 0 4.2 0l2.3-2.3a3 3 0 0 0-4.2-4.2L7.7 4.1"/><path d="M9.5 6.5a3 3 0 0 0-4.2 0L3 8.8a3 3 0 0 0 4.2 4.2l1.1-1.1"/></svg></button>
+</div>
+`;
+}
+function updateKnToolbar() {
+if (!knEditor.open || !knEditor.contentEl) return;
+const sel = window.getSelection();
+const inside = !!(sel && sel.anchorNode && knEditor.contentEl.contains(sel.anchorNode));
+document.querySelectorAll('#knToolbar [data-cmd]').forEach(button => {
+let on = false;
+if (inside) {
+try { on = document.queryCommandState(button.dataset.cmd); } catch (e) { /* не критично */ }
+}
+button.classList.toggle('active', on);
+});
+}
+function runKnCommand(cmd) {
+const el = knEditor.contentEl;
+if (!el) return;
+const sel = window.getSelection();
+if (!sel || !sel.anchorNode || !el.contains(sel.anchorNode)) el.focus();
+try { document.execCommand(cmd, false, null); } catch (e) { return; }
+onKnInput();
+updateKnToolbar();
+}
+
+/* ---------- Ссылки в тексте статьи ---------- */
+// Форма ссылки встроена в окно статьи (не отдельное модальное окно): showModal закрыл бы окно статьи,
+// и несохранённый текст был бы потерян.
+const normLinkText = s => String(s ?? '').replace(/\s+/g, ' ').trim();
+function knLinkFormHtml() {
+return `
+<div class="link-form" id="knLinkForm" role="group" aria-label="Ссылка" hidden>
+<div class="link-form-title">Вставить ссылку</div>
+<label class="link-form-row"><span>Текст ссылки</span><input id="knLinkText" class="field small" maxlength="300" autocomplete="off"></label>
+<label class="link-form-row"><span>URL</span><input id="knLinkUrl" class="field small" inputmode="url" autocomplete="off" placeholder="https:\u002f\u002f…"></label>
+<div class="link-form-error" id="knLinkError" role="alert" hidden></div>
+<div class="link-form-actions">
+<button type="button" class="btn small" data-link-cancel>Отмена</button>
+<button type="button" class="btn small primary" data-link-ok>Вставить</button>
+</div>
+</div>
+`;
+}
+function knLinkEls() {
+const f = knEditor.linkForm;
+if (!f) return null;
+return {
+form: f,
+title: f.querySelector('.link-form-title'),
+text: f.querySelector('#knLinkText'),
+url: f.querySelector('#knLinkUrl'),
+error: f.querySelector('#knLinkError'),
+ok: f.querySelector('[data-link-ok]')
+};
+}
+function knSelectionRange() {
+const el = knEditor.contentEl;
+const sel = window.getSelection();
+if (!el || !sel || !sel.rangeCount) return null;
+const r = sel.getRangeAt(0);
+return el.contains(r.commonAncestorContainer) ? r.cloneRange() : null;
+}
+// Возвращает выделение в статью. Если сохранённое место пропало (текст перерисовался), ставит курсор в конец.
+function restoreKnRange(range) {
+const el = knEditor.contentEl;
+if (!el) return null;
+el.focus();
+let r = range;
+if (!r || !el.contains(r.commonAncestorContainer)) {
+r = document.createRange();
+r.selectNodeContents(el);
+r.collapse(false);
+}
+const sel = window.getSelection();
+sel.removeAllRanges();
+sel.addRange(r);
+return r;
+}
+function openKnLinkForm(anchor) {
+const els = knLinkEls();
+const el = knEditor.contentEl;
+if (!els || !el) return;
+closeMenu();
+if (!els.form.hidden && !anchor) { els.text.focus(); return; }
+let range = null;
+let text = '';
+let url = '';
+if (anchor && el.contains(anchor)) {
+range = document.createRange();
+range.selectNodeContents(anchor);
+text = anchor.textContent;
+url = anchor.getAttribute('href') || '';
+} else {
+anchor = null;
+range = knSelectionRange();
+text = range ? normLinkText(range.toString()) : '';
+}
+knEditor.linkAnchor = anchor;
+knEditor.linkRange = range;
+els.title.textContent = anchor ? 'Изменить ссылку' : 'Вставить ссылку';
+els.ok.textContent = anchor ? 'Сохранить' : 'Вставить';
+els.text.value = text;
+els.url.value = url;
+els.error.hidden = true;
+els.form.hidden = false;
+(text ? els.url : els.text).focus();
+}
+function hideKnLinkForm() {
+const els = knLinkEls();
+if (els) els.form.hidden = true;
+knEditor.linkRange = null;
+knEditor.linkAnchor = null;
+}
+function cancelKnLink() {
+const range = knEditor.linkRange;
+hideKnLinkForm();
+restoreKnRange(range);
+}
+function applyKnLink(anchor, range, label, url) {
+const el = knEditor.contentEl;
+if (anchor && el.contains(anchor)) {
+anchor.setAttribute('href', url);
+if (anchor.textContent !== label) anchor.textContent = label;
+const after = document.createRange();
+after.setStartAfter(anchor);
+after.collapse(true);
+el.focus();
+const s = window.getSelection();
+s.removeAllRanges();
+s.addRange(after);
+return;
+}
+const r = restoreKnRange(range);
+const sel = window.getSelection();
+const collapsed = !r || r.collapsed;
+const keepFormat = !collapsed && normLinkText(r.toString()) === label;
+let done = false;
+try {
+// Выделенный текст без изменений: ссылка оборачивает его, не теряя форматирования внутри.
+// Иначе вставляется новый текст ссылки; для пустого выделения добавляется пробел,
+// чтобы текст, набираемый дальше, не продолжал ссылку.
+done = keepFormat
+? document.execCommand('createLink', false, url)
+: document.execCommand('insertHTML', false,
+'<a href="' + escAttr(url) + '">' + escText(label) + '</a>' + (collapsed ? '&nbsp;' : ''));
+} catch (e) {
+done = false;
+}
+if (!done && r) {
+const a = document.createElement('a');
+a.setAttribute('href', url);
+a.textContent = label;
+r.deleteContents();
+r.insertNode(a);
+const after = document.createRange();
+after.setStartAfter(a);
+after.collapse(true);
+sel.removeAllRanges();
+sel.addRange(after);
+} else if (keepFormat && sel.rangeCount) {
+sel.collapseToEnd();
+}
+}
+function confirmKnLink() {
+const els = knLinkEls();
+if (!els || els.form.hidden) return;
+const url = linkUrlOrNull(els.url.value);
+if (!url) {
+els.error.textContent = 'Нужна корректная ссылка: http:\u002f\u002f, https:\u002f\u002f или адрес вида example.com. Другие схемы (например, javascript:) не разрешены.';
+els.error.hidden = false;
+els.url.focus();
+return;
+}
+const label = normLinkText(els.text.value) || url;
+const anchor = knEditor.linkAnchor;
+const range = knEditor.linkRange;
+hideKnLinkForm();
+applyKnLink(anchor, range, label, url);
+onKnInput();
+}
+function unlinkKnAnchor(anchor) {
+const parent = anchor.parentNode;
+if (!parent) return;
+while (anchor.firstChild) parent.insertBefore(anchor.firstChild, anchor);
+parent.removeChild(anchor);
+onKnInput();
+}
+// Внутри редактируемого поля клик по ссылке не переходит по ней, поэтому показываем маленькую панель.
+function showKnLinkPopover(anchor) {
+closeMenu();
+const href = anchor.getAttribute('href') || '';
+const safe = safeLinkHref(href);
+const menu = document.createElement('div');
+menu.className = 'pill-menu link-pop';
+menu.innerHTML = `
+<a class="link-pop-url"${safe ? ` href="${esc(safe)}" target="_blank" rel="noopener noreferrer"` : ''}>${esc(href)}</a>
+<div class="link-pop-actions">
+<button type="button" class="mini text" data-lp="edit">Изменить</button>
+<button type="button" class="mini text" data-lp="remove">Убрать ссылку</button>
+</div>
+`;
+menu.addEventListener('click', event => {
+if (event.target.closest('.link-pop-url')) { setTimeout(closeMenu, 0); return; }
+const act = event.target.closest('[data-lp]');
+if (!act) return;
+closeMenu();
+if (act.dataset.lp === 'edit') openKnLinkForm(anchor);
+else unlinkKnAnchor(anchor);
+});
+document.body.appendChild(menu);
+placeFloating(menu, anchor);
+openMenu = { key: '__link', menu, trigger: anchor };
+}
+function openKnowledgeEditor(article = null) {
+closeMenu();
+knEditor.open = true;
+knEditor.mode = article ? 'edit' : 'create';
+knEditor.article = article;
+knEditor.inFlight = false;
+knEditor.closeRequested = false;
+knEditor.retries = 0;
+knEditor.rev = 0;
+knEditor.requestId = article ? '' : uid();
+knEditor.title = article ? (article.title || '') : '';
+knEditor.content = article ? (article.content || '') : '';
+
+const m = showModal({
+title: article ? 'Статья' : 'Новая статья',
+width: 760,
+body: `
+<div class="kn-editor">
+<input id="knTitle" class="field" placeholder="Заголовок статьи…" autocomplete="off" value="${esc(knEditor.title)}">
+${knLinkFormHtml()}
+${knToolbarHtml()}
+<div id="knContent" class="comment-field is-empty" contenteditable="true"
+role="textbox" aria-multiline="true"
+data-placeholder="Начни писать статью…"></div>
+<div class="kn-save-row">
+<span id="knSaveStatus" class="save-status">Изменения сохраняются автоматически</span>
+</div>
+</div>
+`,
+actions: [
+{
+label: 'Закрыть',
+value: null,
+onClick: () => {
+requestCloseKnowledgeEditor();
+return false;
+}
+}
+]
+});
+
+const body = m.body;
+knEditor.modal = m;
+knEditor.titleEl = body.querySelector('#knTitle');
+knEditor.contentEl = body.querySelector('#knContent');
+knEditor.statusEl = body.querySelector('#knSaveStatus');
+
+knEditor.contentEl.innerHTML = richToHtml(knEditor.content);
+syncKnEmpty();
+
+knEditor.titleEl.addEventListener('input', () => {
+knEditor.rev++;
+knEditor.title = knEditor.titleEl.value.trim();
+scheduleKnSave(false);
+});
+
+knEditor.titleEl.addEventListener('keydown', event => {
+if (event.key === 'Enter') {
+event.preventDefault();
+scheduleKnSave(true);
+knEditor.contentEl.focus();
+}
+});
+
+knEditor.contentEl.addEventListener('input', onKnInput);
+
+knEditor.contentEl.addEventListener('paste', event => {
+event.preventDefault();
+const text = (event.clipboardData || window.clipboardData).getData('text/plain');
+document.execCommand('insertText', false, text);
+onKnInput();
+});
+
+body.querySelector('#knToolbar').addEventListener('mousedown', event => {
+if (event.target.closest('[data-cmd],[data-kn-link]')) event.preventDefault();
+});
+
+body.querySelector('#knToolbar').addEventListener('click', event => {
+const button = event.target.closest('[data-cmd]');
+if (button) runKnCommand(button.dataset.cmd);
+});
+
+knEditor.linkForm = body.querySelector('#knLinkForm');
+knEditor.linkRange = null;
+knEditor.linkAnchor = null;
+body.querySelector('[data-kn-link]').addEventListener('click', () => openKnLinkForm(null));
+knEditor.linkForm.addEventListener('click', event => {
+if (event.target.closest('[data-link-ok]')) confirmKnLink();
+else if (event.target.closest('[data-link-cancel]')) cancelKnLink();
+});
+knEditor.linkForm.addEventListener('keydown', event => {
+if (event.key === 'Enter') { event.preventDefault(); confirmKnLink(); }
+else if (event.key === 'Escape') {
+// Escape закрывает только форму ссылки, а не всю статью.
+event.preventDefault();
+event.stopPropagation();
+cancelKnLink();
+}
+});
+knEditor.linkForm.addEventListener('input', () => {
+const els = knLinkEls();
+if (els) els.error.hidden = true;
+});
+knEditor.contentEl.addEventListener('keydown', event => {
+if ((event.ctrlKey || event.metaKey) && event.code === 'KeyK') {
+event.preventDefault();
+openKnLinkForm(null);
+}
+});
+knEditor.contentEl.addEventListener('click', event => {
+const a = event.target.closest ? event.target.closest('a') : null;
+if (a && knEditor.contentEl.contains(a)) showKnLinkPopover(a);
+});
+document.addEventListener('selectionchange', updateKnToolbar);
+knEditor.titleEl.focus();
+setKnStatus(article ? 'Все изменения сохранены' : 'Введи заголовок — статья создастся автоматически');
+}
+
+/* ---------- Этап 6: темы ---------- */
+
+const THEME_MODE_KEY = 'qaflow.themeMode';
+const THEME_CUSTOM_KEY = 'qaflow.customTheme';
+const THEME_VARS_KEY = 'qaflow.themeVars';
+
+const DEFAULT_CUSTOM_THEME = {
+  bg: '#11121b',
+  panel: '#1b1d2a',
+  border: '#35374d',
+  text: '#f1f0fa',
+  muted: '#999db6',
+  accent: '#b9a5ff'
+};
+
+const DARK_PILLS = {
+  '--pill-flow-fg': '#a3edf3',
+  '--pill-flow-bg': '#193b43',
+  '--pill-flow-bd': '#28535d',
+
+  '--pill-version-fg': '#d5c5ff',
+  '--pill-version-bg': '#392f54',
+  '--pill-version-bd': '#51416e',
+
+  '--pill-date-fg': '#f6d2a0',
+  '--pill-date-bg': '#443522',
+  '--pill-date-bd': '#624c30',
+
+  '--pill-category-fg': '#aee7c8',
+  '--pill-category-bg': '#203f35',
+  '--pill-category-bd': '#315e4c',
+
+  '--pill-assignee-fg': '#b8d5ff',
+  '--pill-assignee-bg': '#26384e',
+  '--pill-assignee-bd': '#3a5272',
+
+  '--pill-developer-fg': '#f2b9d7',
+  '--pill-developer-bg': '#462b42',
+  '--pill-developer-bd': '#65405e',
+
+  '--pill-status-fg': '#d3c7ff',
+  '--pill-status-bg': '#332b50',
+  '--pill-status-bd': '#514272',
+
+  '--pill-generic-fg': '#d4d6e6',
+  '--pill-generic-bg': '#2c2f45',
+  '--pill-generic-bd': '#43465f'
+};
+
+const LIGHT_PILLS = {
+  '--pill-flow-fg': '#075964',
+  '--pill-flow-bg': '#d8f6fa',
+  '--pill-flow-bd': '#8fd7e2',
+
+  '--pill-version-fg': '#4b2eb8',
+  '--pill-version-bg': '#ece7ff',
+  '--pill-version-bd': '#b7a8ff',
+
+  '--pill-date-fg': '#7a4a08',
+  '--pill-date-bg': '#fff0d6',
+  '--pill-date-bd': '#f0c98a',
+
+  '--pill-category-fg': '#116b45',
+  '--pill-category-bg': '#dcf7ea',
+  '--pill-category-bd': '#8fd8b4',
+
+  '--pill-assignee-fg': '#164e8f',
+  '--pill-assignee-bg': '#e1efff',
+  '--pill-assignee-bd': '#9cc5f5',
+
+  '--pill-developer-fg': '#8d2460',
+  '--pill-developer-bg': '#ffe3f3',
+  '--pill-developer-bd': '#f3a8d1',
+
+  '--pill-status-fg': '#4b3a9e',
+  '--pill-status-bg': '#eeeaff',
+  '--pill-status-bd': '#b9abf0',
+
+  '--pill-generic-fg': '#30334a',
+  '--pill-generic-bg': '#eef0f7',
+  '--pill-generic-bd': '#c8ccdd'
+};
+
+const DARK_VARS = Object.assign({
+  '--bg': '#11121b',
+  '--panel': '#1b1d2a',
+  '--panel2': '#242638',
+  '--panel3': '#202234',
+  '--border': '#35374d',
+  '--border-strong': '#41435b',
+  '--text': '#f1f0fa',
+  '--muted': '#999db6',
+  '--accent': '#b9a5ff',
+  '--cyan': '#83e5ed',
+  '--green': '#8fe0bd',
+  '--orange': '#f4c58b',
+  '--red': '#f49aaa',
+
+  '--input-bg': '#12141e',
+  '--hover': '#222435',
+  '--active': '#2b2e45',
+  '--shadow': '#0008',
+  '--overlay': '#080910d9',
+  '--scroll': '#48445f',
+
+  '--accent-contrast': '#211b34',
+  '--accent-soft': '#b9a5ff22',
+  '--accent-glow': '#b9a5ff55',
+  '--gradient-brand': 'linear-gradient(135deg,#c9baff,#83e5ed)',
+  '--gradient-accent': 'linear-gradient(120deg,#c9baff,#83e5ed)',
+
+  '--surface-lane': '#1a1c29e8',
+  '--surface-task': 'linear-gradient(145deg,#27293b,#202231)',
+  '--surface-task-hover': '#8176b5',
+  '--surface-modal': '#1b1d2a',
+  '--surface-menu': '#202234',
+  '--surface-toolbar': '#171925',
+  '--surface-field': '#12141e',
+
+  '--danger-fg': '#ffb3bf',
+  '--danger-bd': '#6b3441',
+  '--warning-fg': '#f3e0a8',
+  '--warning-bd': '#6a5a2e',
+  '--warning-bg': '#2c2615cc',
+
+  '--color-scheme': 'dark'
+}, DARK_PILLS);
+
+const LIGHT_VARS = Object.assign({
+  '--bg': '#f5f6fa',
+  '--panel': '#ffffff',
+  '--panel2': '#eef0f7',
+  '--panel3': '#f8f9fc',
+  '--border': '#d7dae8',
+  '--border-strong': '#b9bfd3',
+  '--text': '#151723',
+  '--muted': '#5f6478',
+  '--accent': '#5b3df5',
+  '--cyan': '#0b8f9c',
+  '--green': '#16845b',
+  '--orange': '#b45309',
+  '--red': '#c2384f',
+
+  '--input-bg': '#ffffff',
+  '--hover': '#eceef7',
+  '--active': '#e2e5f2',
+  '--shadow': 'rgba(15,23,42,.14)',
+  '--overlay': 'rgba(17,19,26,.55)',
+  '--scroll': '#b8bdce',
+
+  '--accent-contrast': '#ffffff',
+  '--accent-soft': 'rgba(91,61,245,.14)',
+  '--accent-glow': 'rgba(91,61,245,.28)',
+  '--gradient-brand': 'linear-gradient(135deg,#7b5cff,#18b6c8)',
+  '--gradient-accent': 'linear-gradient(120deg,#7b5cff,#18b6c8)',
+
+  '--surface-lane': 'rgba(255,255,255,.86)',
+  '--surface-task': 'linear-gradient(145deg,#ffffff,#f3f4fb)',
+  '--surface-task-hover': '#9b8cff',
+  '--surface-modal': '#ffffff',
+  '--surface-menu': '#ffffff',
+  '--surface-toolbar': '#f3f4fb',
+  '--surface-field': '#ffffff',
+
+  '--danger-fg': '#b42340',
+  '--danger-bd': '#f0a7b7',
+  '--warning-fg': '#8a5a00',
+  '--warning-bd': '#e2c078',
+  '--warning-bg': '#fff5d6',
+
+  '--color-scheme': 'light'
+}, LIGHT_PILLS);
+
+let themeMode = 'dark';
+let customTheme = { ...DEFAULT_CUSTOM_THEME };
+let lastAppliedThemeVars = null;
+let themeModalBody = null;
+let themeInitialized = false;
+
+const themeMedia = window.matchMedia('(prefers-color-scheme: light)');
+
+function normalizeHex(value, fallback) {
+  let s = String(value ?? '').trim();
+  if (/^#[0-9a-f]{3}$/i.test(s)) {
+    const r = s[1], g = s[2], b = s[3];
+    return ('#' + r + r + g + g + b + b).toLowerCase();
+  }
+  if (/^#[0-9a-f]{6}$/i.test(s)) return s.toLowerCase();
+  return String(fallback).toLowerCase();
+}
+
+function hexToRgb(hex) {
+  const clean = normalizeHex(hex, '#000000').replace('#', '');
+  return {
+    r: parseInt(clean.slice(0, 2), 16),
+    g: parseInt(clean.slice(2, 4), 16),
+    b: parseInt(clean.slice(4, 6), 16)
+  };
+}
+
+function rgbToHex(r, g, b) {
+  const to = n => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0');
+  return '#' + to(r) + to(g) + to(b);
+}
+
+function mixHex(a, b, weight) {
+  const w = Math.max(0, Math.min(1, Number(weight) || 0));
+  const ca = hexToRgb(a);
+  const cb = hexToRgb(b);
+  return rgbToHex(
+    ca.r + (cb.r - ca.r) * w,
+    ca.g + (cb.g - ca.g) * w,
+    ca.b + (cb.b - ca.b) * w
+  );
+}
+
+function luminance(hex) {
+  const { r, g, b } = hexToRgb(hex);
+  const a = [r, g, b].map(v => {
+    const c = v / 255;
+    return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  });
+  return 0.2126 * a[0] + 0.7152 * a[1] + 0.0722 * a[2];
+}
+
+function contrastRatio(hex1, hex2) {
+  const l1 = luminance(hex1);
+  const l2 = luminance(hex2);
+  const lighter = Math.max(l1, l2);
+  const darker = Math.min(l1, l2);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function readableOn(bg) {
+  return contrastRatio('#ffffff', bg) >= contrastRatio('#111111', bg) ? '#ffffff' : '#111111';
+}
+
+function ensureContrast(fg, bg, min) {
+  let out = normalizeHex(fg, bg);
+  const background = normalizeHex(bg, '#000000');
+  if (contrastRatio(out, background) >= min) return out;
+
+  const target = readableOn(background);
+  for (let i = 1; i <= 24; i++) {
+    out = mixHex(out, target, i / 24);
+    if (contrastRatio(out, background) >= min) return out;
+  }
+  return target;
+}
+
+function hexToRgba(hex, alpha) {
+  const { r, g, b } = hexToRgb(hex);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function sanitizeCustomTheme(value) {
+  const src = isObj(value) ? value : {};
+  return {
+    bg: normalizeHex(src.bg, DEFAULT_CUSTOM_THEME.bg),
+    panel: normalizeHex(src.panel, DEFAULT_CUSTOM_THEME.panel),
+    border: normalizeHex(src.border, DEFAULT_CUSTOM_THEME.border),
+    text: normalizeHex(src.text, DEFAULT_CUSTOM_THEME.text),
+    muted: normalizeHex(src.muted, DEFAULT_CUSTOM_THEME.muted),
+    accent: normalizeHex(src.accent, DEFAULT_CUSTOM_THEME.accent)
+  };
+}
+
+function deriveCustomTheme(raw) {
+  const c = sanitizeCustomTheme(raw);
+
+  const bg = c.bg;
+  const isLight = luminance(bg) > 0.42;
+
+  const text = ensureContrast(c.text, bg, 4.5);
+  const muted = ensureContrast(c.muted, bg, 3.1);
+  const border = ensureContrast(c.border, bg, 1.25);
+  const accent = c.accent;
+
+  let panel = c.panel;
+  if (contrastRatio(panel, bg) < 1.06) {
+    panel = mixHex(panel, text, isLight ? 0.08 : 0.12);
+  }
+
+  const panel2 = isLight
+    ? mixHex(panel, '#000000', 0.035)
+    : mixHex(panel, text, 0.08);
+
+  const panel3 = isLight
+    ? mixHex(panel, '#ffffff', 0.35)
+    : mixHex(panel, text, 0.025);
+
+  const inputBg = isLight ? '#ffffff' : mixHex(bg, '#000000', 0.22);
+  const hover = isLight ? mixHex(panel, '#000000', 0.055) : mixHex(panel, text, 0.075);
+  const active = isLight ? mixHex(panel, '#000000', 0.10) : mixHex(panel, text, 0.13);
+
+  const shadow = isLight ? 'rgba(15,23,42,.14)' : 'rgba(0,0,0,.52)';
+  const overlay = hexToRgba(bg, isLight ? 0.58 : 0.84);
+  const scroll = mixHex(border, text, 0.18);
+  const borderStrong = mixHex(border, text, 0.18);
+
+  const accentContrast = readableOn(accent);
+  const accentSoft = hexToRgba(accent, isLight ? 0.14 : 0.18);
+  const accentGlow = hexToRgba(accent, isLight ? 0.26 : 0.35);
+
+  const semantic = isLight
+    ? { cyan: '#0b8f9c', green: '#16845b', orange: '#b45309', red: '#c2384f' }
+    : { cyan: '#83e5ed', green: '#8fe0bd', orange: '#f4c58b', red: '#f49aaa' };
+
+  const taskA = mixHex(panel, text, isLight ? 0.025 : 0.055);
+  const taskB = mixHex(panel, text, isLight ? 0.065 : 0.105);
+
+  const vars = Object.assign({}, isLight ? LIGHT_VARS : DARK_VARS);
+
+  Object.assign(vars, {
+    '--bg': bg,
+    '--panel': panel,
+    '--panel2': panel2,
+    '--panel3': panel3,
+    '--border': border,
+    '--border-strong': borderStrong,
+    '--text': text,
+    '--muted': muted,
+    '--accent': accent,
+
+    '--cyan': semantic.cyan,
+    '--green': semantic.green,
+    '--orange': semantic.orange,
+    '--red': semantic.red,
+
+    '--input-bg': inputBg,
+    '--hover': hover,
+    '--active': active,
+    '--shadow': shadow,
+    '--overlay': overlay,
+    '--scroll': scroll,
+
+    '--accent-contrast': accentContrast,
+    '--accent-soft': accentSoft,
+    '--accent-glow': accentGlow,
+    '--gradient-brand': `linear-gradient(135deg, ${accent}, ${semantic.cyan})`,
+    '--gradient-accent': `linear-gradient(120deg, ${accent}, ${semantic.cyan})`,
+
+    '--surface-lane': hexToRgba(panel, isLight ? 0.88 : 0.92),
+    '--surface-task': `linear-gradient(145deg, ${taskA}, ${taskB})`,
+    '--surface-task-hover': mixHex(accent, text, 0.25),
+    '--surface-modal': panel,
+    '--surface-menu': panel3,
+    '--surface-toolbar': isLight ? mixHex(bg, '#ffffff', 0.45) : mixHex(panel3, '#000000', 0.12),
+    '--surface-field': inputBg,
+
+    '--danger-fg': isLight ? '#b42340' : '#ffb3bf',
+    '--danger-bd': isLight ? '#f0a7b7' : '#6b3441',
+    '--warning-fg': isLight ? '#8a5a00' : '#f3e0a8',
+    '--warning-bd': isLight ? '#e2c078' : '#6a5a2e',
+    '--warning-bg': isLight ? '#fff5d6' : hexToRgba('#2c2615', 0.8),
+
+    '--color-scheme': isLight ? 'light' : 'dark'
+  });
+
+  return vars;
+}
+
+function saveThemeState(vars) {
+  try {
+    localStorage.setItem(THEME_MODE_KEY, themeMode);
+    localStorage.setItem(THEME_CUSTOM_KEY, JSON.stringify(customTheme));
+    localStorage.setItem(THEME_VARS_KEY, JSON.stringify(vars || {}));
+  } catch (e) {
+    /* localStorage может быть недоступен — тема просто не сохранится */
+  }
+}
+
+function loadThemeState() {
+  try {
+    const mode = localStorage.getItem(THEME_MODE_KEY);
+    if (['dark', 'light', 'system', 'custom'].includes(mode)) {
+      themeMode = mode;
+    }
+  } catch (e) {
+    themeMode = 'dark';
+  }
+
+  try {
+    const saved = JSON.parse(localStorage.getItem(THEME_CUSTOM_KEY) || 'null');
+    if (saved) customTheme = sanitizeCustomTheme(saved);
+  } catch (e) {
+    customTheme = { ...DEFAULT_CUSTOM_THEME };
+  }
+}
+
+function applyTheme(mode = themeMode, custom = customTheme, persist = true) {
+  if (!['dark', 'light', 'system', 'custom'].includes(mode)) mode = 'dark';
+  themeMode = mode;
+  customTheme = sanitizeCustomTheme(custom);
+
+  const resolved = themeMode === 'system'
+    ? (themeMedia.matches ? 'light' : 'dark')
+    : themeMode;
+
+  const vars = themeMode === 'custom'
+    ? deriveCustomTheme(customTheme)
+    : Object.assign({}, resolved === 'light' ? LIGHT_VARS : DARK_VARS);
+
+  lastAppliedThemeVars = vars;
+
+  const root = document.documentElement;
+  root.dataset.theme = themeMode;
+  root.dataset.resolvedTheme = resolved;
+  root.style.colorScheme = vars['--color-scheme'] || 'dark';
+
+  Object.keys(vars).forEach(key => {
+    root.style.setProperty(key, vars[key]);
+  });
+
+  if (persist) saveThemeState(vars);
+  syncThemeModal();
+}
+
+function setThemeMode(mode) {
+  applyTheme(mode, customTheme, true);
+}
+
+function autoFixCustomTheme() {
+  const vars = deriveCustomTheme(customTheme);
+  customTheme = {
+    bg: vars['--bg'],
+    panel: vars['--panel'],
+    border: vars['--border'],
+    text: vars['--text'],
+    muted: vars['--muted'],
+    accent: ensureContrast(vars['--accent'], vars['--bg'], 3)
+  };
+  applyTheme('custom', customTheme, true);
+}
+
+function resetCustomTheme() {
+  customTheme = { ...DEFAULT_CUSTOM_THEME };
+  applyTheme('custom', customTheme, true);
+}
+
+function updateThemeWarning() {
+  if (!themeModalBody || !themeModalBody.isConnected || !lastAppliedThemeVars) return;
+
+  const el = themeModalBody.querySelector('#themeWarning');
+  if (!el) return;
+
+  const v = lastAppliedThemeVars;
+  const warnings = [];
+
+  if (contrastRatio(v['--text'], v['--bg']) < 4.5) {
+    warnings.push('Основной текст может плохо читаться на фоне.');
+  }
+  if (contrastRatio(v['--muted'], v['--bg']) < 3) {
+    warnings.push('Вторичный текст слишком блёклый.');
+  }
+  if (contrastRatio(v['--border'], v['--bg']) < 1.18) {
+    warnings.push('Границы элементов почти не видны.');
+  }
+  if (contrastRatio(v['--accent'], v['--bg']) < 2.2) {
+    warnings.push('Акцентный цвет может теряться на фоне.');
+  }
+
+  el.hidden = warnings.length === 0;
+  el.textContent = warnings.join(' ');
+}
+
+function syncThemeModal() {
+  if (!themeModalBody || !themeModalBody.isConnected) return;
+
+  themeModalBody.querySelectorAll('[data-theme-mode]').forEach(button => {
+    const active = button.dataset.themeMode === themeMode;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-checked', active ? 'true' : 'false');
+  });
+
+  const customPanel = themeModalBody.querySelector('#themeCustomPanel');
+  if (customPanel) customPanel.hidden = themeMode !== 'custom';
+
+  themeModalBody.querySelectorAll('[data-theme-color]').forEach(input => {
+    const key = input.dataset.themeColor;
+    input.value = customTheme[key] || DEFAULT_CUSTOM_THEME[key] || '#000000';
+  });
+
+  updateThemeWarning();
+}
+
+function themeColorFieldHtml(label, key) {
+  return `
+    <label class="theme-color">
+      <span>${esc(label)}</span>
+      <input type="color" data-theme-color="${esc(key)}" value="${esc(customTheme[key])}">
+    </label>
+  `;
+}
+
+function themeModalHtml() {
+  return `
+    <div class="theme-settings">
+      <div class="theme-mode-grid" role="radiogroup" aria-label="Режим темы">
+        <button type="button" class="theme-mode-btn" data-theme-mode="dark" role="radio" aria-checked="${themeMode === 'dark'}">Тёмная</button>
+        <button type="button" class="theme-mode-btn" data-theme-mode="light" role="radio" aria-checked="${themeMode === 'light'}">Светлая</button>
+        <button type="button" class="theme-mode-btn" data-theme-mode="system" role="radio" aria-checked="${themeMode === 'system'}">Системная</button>
+        <button type="button" class="theme-mode-btn" data-theme-mode="custom" role="radio" aria-checked="${themeMode === 'custom'}">Пользовательская</button>
+      </div>
+
+      <div class="theme-custom-panel" id="themeCustomPanel"${themeMode === 'custom' ? '' : ' hidden'}>
+        <div class="theme-color-grid">
+          ${themeColorFieldHtml('Фон', 'bg')}
+          ${themeColorFieldHtml('Панели', 'panel')}
+          ${themeColorFieldHtml('Границы', 'border')}
+          ${themeColorFieldHtml('Текст', 'text')}
+          ${themeColorFieldHtml('Вторичный текст', 'muted')}
+          ${themeColorFieldHtml('Акцент', 'accent')}
+        </div>
+
+        <div class="theme-actions-row">
+          <button type="button" class="btn small" data-theme-action="auto-contrast">Подобрать контраст</button>
+          <button type="button" class="btn small" data-theme-action="reset">Сбросить тему</button>
+        </div>
+
+        <div id="themeWarning" class="theme-warning" hidden></div>
+      </div>
+
+      <div class="theme-preview" aria-hidden="true">
+        <div class="theme-preview-card">
+          <div class="theme-preview-title">Пример карточки</div>
+          <div class="theme-preview-tags">
+            <span class="tag status">Статус</span>
+            <span class="tag flow">Флоу</span>
+            <span class="tag category">Категория</span>
+          </div>
+          <div class="theme-preview-text">
+            Так будут выглядеть свойства, описание и служебные элементы в выбранной теме.
+          </div>
+          <button type="button" class="btn primary small" tabindex="-1">Основное действие</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function openThemeSettings() {
+  closeMenu();
+
+  const m = showModal({
+    title: 'Тема интерфейса',
+    width: 620,
+    body: themeModalHtml(),
+    actions: [
+      { label: 'Закрыть', value: null }
+    ]
+  });
+
+  themeModalBody = m.body;
+
+  const cleanup = () => {
+    themeModalBody = null;
+  };
+  m.promise.then(cleanup, cleanup);
+
+  m.body.addEventListener('click', event => {
+    const modeButton = event.target.closest('[data-theme-mode]');
+    if (modeButton) {
+      setThemeMode(modeButton.dataset.themeMode);
+      return;
+    }
+
+    const action = event.target.closest('[data-theme-action]');
+    if (!action) return;
+
+    if (action.dataset.themeAction === 'auto-contrast') {
+      autoFixCustomTheme();
+    } else if (action.dataset.themeAction === 'reset') {
+      resetCustomTheme();
+    }
+  });
+
+  m.body.addEventListener('input', event => {
+    const colorInput = event.target.closest('[data-theme-color]');
+    if (!colorInput) return;
+
+    const key = colorInput.dataset.themeColor;
+    customTheme[key] = colorInput.value;
+
+    if (themeMode !== 'custom') {
+      themeMode = 'custom';
+    }
+
+    applyTheme('custom', customTheme, true);
+  });
+
+  syncThemeModal();
+}
+
+function initTheme() {
+  if (themeInitialized) return;
+  themeInitialized = true;
+
+  loadThemeState();
+  applyTheme(themeMode, customTheme, true);
+
+  const onSystemThemeChange = () => {
+    if (themeMode === 'system') {
+      applyTheme('system', customTheme, false);
+    }
+  };
+
+  if (typeof themeMedia.addEventListener === 'function') {
+    themeMedia.addEventListener('change', onSystemThemeChange);
+  } else if (typeof themeMedia.addListener === 'function') {
+    themeMedia.addListener(onSystemThemeChange);
+  }
+}
+
+/* ---------- События ---------- */
+$('newTaskBtn').addEventListener('click', () => {
+if (activeSection.type === 'board') openEditor();
+else openKnowledgeEditor(null);
+});
+$('refreshBtn').addEventListener('click', () => {
+if (workspaceState !== 'ready') { initWorkspace(); return; }
+refreshWorkspace();
+if (activeSection.type === 'knowledge') loadKnowledge(activeSection.id);
+else loadBoard(true);
+});
+// Повтор после ошибки загрузки доски.
+$('board').addEventListener('click', event => {
+const laneToggle = event.target.closest('[data-toggle-lane]');
+if (laneToggle) { toggleLane(laneToggle.dataset.toggleLane); return; }
+if (event.target.closest('[data-add-column]')) { addStatusColumn(); return; }
+if (!event.target.closest('[data-board-retry]')) return;
+if (activeSection.type === 'board' && activeSection.id !== null) {
+boardNeedsLoad = true;
+$('board').innerHTML = '<div class="loading">Загружаем задачи…</div>';
+loadBoard(true, true);
+}
+});
+$('closeEditor').addEventListener('click', requestCloseEditor);
+$('compactBtn').addEventListener('click', () => setCompact(!isCompact()));
+$('toggleFullscreen').addEventListener('click', () => setFullscreen(!fullscreen));
+$('propsToggle').addEventListener('click', () => setPropsCollapsed(!propsCollapsed));
+$('taskOverlay').addEventListener('click', event => {
+if (event.target === $('taskOverlay')) requestCloseEditor();
+});
+// Поиск и быстрые фильтры правят черновик представления.
+$('search').addEventListener('input', () => {
+draft.filters.search = $('search').value;
+refreshView();
+});
+FILTERS.forEach(([id, field]) => {
+$(id).addEventListener('change', () => {
+const value = $(id).value;
+if (value && value !== '__multi') draft.filters.values[field] = [value];
+else delete draft.filters.values[field];
+syncQuickSelects();
+refreshView();
+});
+});
+// Представления: вкладки, меню «⋯», создание.
+$('viewTabs').addEventListener('click', event => {
+const tab = event.target.closest('[data-view]');
+if (tab) { selectView(tab.dataset.view); return; }
+const more = event.target.closest('[data-view-menu]');
+if (more) { openViewMenu(more); return; }
+if (event.target.closest('[data-add-view]')) addView();
+});
+$('filtersBtn').addEventListener('click', openFiltersPanel);
+$('columnsBtn').addEventListener('click', () => openViewSettings('active'));
+$('propsBtn').addEventListener('click', openPropertySettings);
+$('exportBtn').addEventListener('click', openExport);
+// Тема теперь открывается из раздела «Настройки» боковой панели: то же окно и тот же механизм сохранения.
+$('themeBtn').addEventListener('click', () => {
+document.body.classList.remove('sidebar-open');
+syncSidebarToggle();
+openThemeSettings();
+});
+
+// Этап 5: sidebar и базы знаний.
+// Скрытие панели меняет только классы: доска, фильтры, представление и открытые редакторы не перезагружаются.
+// Широкий экран: панель сворачивается совсем, состояние хранится в localStorage.
+// Узкий экран: панель выезжает поверх и закрывается кнопкой ✕.
+$('sidebarToggle').addEventListener('click', () => {
+if (isDesktopLayout()) setSidebarCollapsed(false, true);
+else {
+document.body.classList.toggle('sidebar-open');
+syncSidebarToggle();
+}
+});
+$('sidebarCollapse').addEventListener('click', () => setSidebarCollapsed(true, true));
+$('sidebarClose').addEventListener('click', () => {
+document.body.classList.remove('sidebar-open');
+syncSidebarToggle();
+});
+if (desktopMedia.addEventListener) {
+desktopMedia.addEventListener('change', () => {
+// При смене размера окна выезжающая панель не должна оставаться открытой.
+document.body.classList.remove('sidebar-open');
+syncSidebarToggle();
+});
+}
+syncSidebarToggle();
+$('addBoardBtn').addEventListener('click', addBoard);
+$('addKnowledgeBtn').addEventListener('click', addKnowledge);
+$('showArchived').checked = showArchived;
+$('showArchived').addEventListener('change', event => {
+showArchived = event.target.checked;
+try { localStorage.setItem(SHOW_ARCHIVED_KEY, showArchived ? '1' : '0'); } catch (e) { /* не критично */ }
+renderSidebar();
+});
+$('sidebar').addEventListener('click', event => {
+if (event.target.closest('[data-side-retry]')) {
+initWorkspace();
+return;
+}
+const menuTrigger = event.target.closest('[data-side-menu]');
+if (menuTrigger) {
+openSideMenu(menuTrigger, menuTrigger.dataset.sideMenu, Number(menuTrigger.dataset.sideId));
+return;
+}
+
+const row = event.target.closest('[data-side-id]');
+if (!row) return;
+if (event.target.closest('.side-menu')) return;
+switchSection(row.dataset.sideType, Number(row.dataset.sideId));
+});
+
+$('newKnowledgeBtn').addEventListener('click', () => openKnowledgeEditor(null));
+$('knowledgeSearch').addEventListener('input', event => {
+knowledgeSearch = event.target.value;
+renderKnowledge();
+});
+$('knowledgeBoard').addEventListener('click', event => {
+if (event.target.closest('[data-kn-retry]')) {
+if (activeSection.type === 'knowledge') {
+$('knowledgeBoard').innerHTML = '<div class="loading">Загружаем статьи…</div>';
+loadKnowledge(activeSection.id);
+}
+return;
+}
+const card = event.target.closest('[data-kn-id]');
+if (!card) return;
+const article = knowledgeArticles.find(a => a._id === card.dataset.knId);
+if (article) openKnowledgeEditor(article);
+});
+
+$('sortKey').addEventListener('change', () => {
+draft.sort.key = $('sortKey').value;
+if (!draft.sort.key) draft.sort.dir = 'asc';
+renderSortControls();
+refreshView();
+});
+$('sortDir').addEventListener('click', () => {
+if (!draft.sort.key) return;
+draft.sort.dir = draft.sort.dir === 'desc' ? 'asc' : 'desc';
+renderSortControls();
+refreshView();
+});
+// Панель «фильтры изменены»: сохранить, сохранить как новое, сбросить.
+$('draftSave').addEventListener('click', saveDraftToView);
+$('draftSaveAs').addEventListener('click', saveAsNew);
+$('draftReset').addEventListener('click', () => {
+initDraft();
+renderAll();
+});
+$('taskTitle').addEventListener('input', () => {
+editor.values['задача'] = $('taskTitle').value.trim();
+scheduleSave(false);
+});
+// Для новой карточки уход из поля названия сразу создаёт запись.
+$('taskTitle').addEventListener('blur', () => {
+if (editor.open && editor.mode === 'create' && editor.values['задача']) scheduleSave(true);
+});
+// Enter в названии сохраняет и переводит курсор в описание.
+$('taskTitle').addEventListener('keydown', event => {
+if (event.key !== 'Enter') return;
+event.preventDefault();
+scheduleSave(true);
+if (!$('commentSection').hidden) rich.focus();
+});
+$('taskForm').addEventListener('submit', event => {
+event.preventDefault();
+scheduleSave(true);
+});
+// Диалоги закрываются по клику на подложку (только если нажатие тоже началось на ней).
+let downOnBackdrop = false;
+$('modalOverlay').addEventListener('mousedown', event => {
+downOnBackdrop = event.target === $('modalOverlay');
+});
+$('modalOverlay').addEventListener('click', event => {
+if (downOnBackdrop && event.target === $('modalOverlay') && modal) {
+if (knEditor.open) requestCloseKnowledgeEditor();
+else modal.close(undefined);
+}
+downOnBackdrop = false;
+});
+document.addEventListener('click', event => {
+if (openMenu && !openMenu.menu.contains(event.target) && !openMenu.trigger.contains(event.target)) {
+closeMenu();
+}
+});
+document.addEventListener('keydown', event => {
+if (event.key !== 'Escape') return;
+if (modal) {
+if (knEditor.open) requestCloseKnowledgeEditor();
+else modal.close(undefined);
+}
+else if (openMenu) closeMenu();
+else if (editor.open) requestCloseEditor();
+});
+window.addEventListener('resize', closeMenu);
+window.addEventListener('scroll', event => {
+// Прокрутка внутри самого меню не должна его закрывать.
+if (openMenu && !openMenu.menu.contains(event.target)) closeMenu();
+}, true);
+window.addEventListener('beforeunload', event => {
+if (pending > 0 || editor.inFlight || isDirty() || knEditor.inFlight || (knEditor.open && knDirty())) {
+event.preventDefault();
+event.returnValue = '';
+}
+});
+
+try { fullscreen = localStorage.getItem(FS_KEY) === '1'; } catch (e) { fullscreen = false; }
+try { propsCollapsed = localStorage.getItem(PROPS_KEY) === '1'; } catch (e) { propsCollapsed = false; }
+try { showArchived = localStorage.getItem(SHOW_ARCHIVED_KEY) === '1'; } catch (e) { showArchived = false; }
+
+initTheme();
+bindTaskLinkUi();
+initWorkspace();
+
+setInterval(() => {
+  if (document.hidden) return;
+  if (loading || pending > 0 || editorBusy() || (knEditor.open && (knEditor.inFlight || knDirty()))) return;
+  refreshWorkspace();
+  if (activeSection.type === 'board') loadBoard();
+}, 30000);
+// При возвращении на вкладку сразу подтягиваем свежий список.
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) refreshWorkspace();
+});
+})();
+</script>

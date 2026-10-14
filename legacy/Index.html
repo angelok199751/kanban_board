@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <base target="_top">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <?!= include('Styles'); ?>
+  <script>
+(function () {
+  try {
+    var mode = localStorage.getItem('qaflow.themeMode') || 'dark';
+    var varsRaw = localStorage.getItem('qaflow.themeVars');
+    var vars = varsRaw ? JSON.parse(varsRaw) : null;
+
+    var resolved = mode;
+    if (mode === 'system') {
+      resolved = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+    } else if (mode !== 'dark' && mode !== 'light' && mode !== 'custom') {
+      mode = 'dark';
+      resolved = 'dark';
+    }
+
+    var root = document.documentElement;
+    root.dataset.theme = mode;
+    root.dataset.resolvedTheme = resolved;
+
+    // Состояние боковой панели применяем сразу, чтобы при загрузке она не мигала.
+    if (localStorage.getItem('qaflow.sidebarCollapsed') === '1') {
+      root.classList.add('sidebar-collapsed');
+    }
+
+    if (vars && typeof vars === 'object') {
+      Object.keys(vars).forEach(function (key) {
+        root.style.setProperty(key, vars[key]);
+      });
+      if (vars['--color-scheme']) {
+        root.style.colorScheme = vars['--color-scheme'];
+      }
+    }
+  } catch (e) {
+    /* если localStorage недоступен — используем тему по умолчанию */
+  }
+})();
+</script>
+</head>
+<body>
+  <div class="layout">
+  <aside id="sidebar" class="sidebar" aria-label="Навигация">
+    <div class="sidebar-head">
+      <div class="sidebar-brand">
+        <div class="logo small">✦</div>
+        <div>
+          <div class="sidebar-title-main">QA Flow</div>
+          <div class="sidebar-subtitle">Доски и знания</div>
+        </div>
+      </div>
+      <button class="icon-btn sidebar-collapse" id="sidebarCollapse" type="button" title="Скрыть панель" aria-label="Скрыть панель" aria-controls="sidebar">«</button>
+      <button class="icon-btn sidebar-close" id="sidebarClose" type="button" aria-label="Закрыть панель">✕</button>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-section-head">
+        <span>Доски</span>
+        <button class="icon-btn small" id="addBoardBtn" type="button" title="Создать доску">＋</button>
+      </div>
+      <div id="boardList" class="sidebar-list"></div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-section-head">
+        <span>Базы знаний</span>
+        <button class="icon-btn small" id="addKnowledgeBtn" type="button" title="Создать базу знаний">＋</button>
+      </div>
+      <div id="knowledgeList" class="sidebar-list"></div>
+    </div>
+
+    <div class="sidebar-footer">
+      <label class="sidebar-archive-toggle">
+        <input type="checkbox" id="showArchived">
+        <span>Показать архив</span>
+      </label>
+
+      <div class="sidebar-section sidebar-settings">
+        <div class="sidebar-section-head">
+          <span>Настройки</span>
+        </div>
+        <div class="side-item">
+          <button class="side-main" id="themeBtn" type="button" aria-haspopup="dialog">🎨 Тема интерфейса</button>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <button class="icon-btn sidebar-toggle" id="sidebarToggle" type="button" title="Открыть панель" aria-label="Открыть панель" aria-controls="sidebar" aria-expanded="true">☰</button>
+          <div class="logo">✦</div>
+          <div>
+            <h1 id="workspaceTitle">QA Flow</h1>
+            <div class="subtitle" id="workspaceSubtitle">Командная доска задач</div>
+          </div>
+        </div>
+        <div class="header-actions">
+          <span id="syncLabel" class="sync-label">Подключение…</span>
+          <button class="btn" id="refreshBtn" type="button">↻ Обновить</button>
+          <button class="btn primary" id="newTaskBtn" type="button">＋ Новая задача</button>
+        </div>
+      </header>
+
+      <!-- Вид доски -->
+      <div id="boardView">
+        <section class="viewbar" aria-label="Представления доски">
+          <div id="viewTabs" class="view-tabs" role="tablist"></div>
+          <div class="view-tools">
+            <button class="btn small" id="filtersBtn" type="button" aria-haspopup="dialog">⚲ Фильтры <span id="filtersBadge" class="badge" hidden></span></button>
+            <div class="sort-box">
+              <select id="sortKey" class="field small" aria-label="Сортировка"></select>
+              <button class="btn small icon" id="sortDir" type="button" title="Направление сортировки" aria-label="Направление сортировки">↑</button>
+            </div>
+            <button class="btn small" id="compactBtn" type="button" aria-pressed="false" title="Показывать на карточках только заголовок">▤ Компактно</button>
+            <button class="btn small" id="propsBtn" type="button">☰ Свойства</button>
+            <button class="btn small" id="columnsBtn" type="button">▥ Настроить вид</button>
+            <button class="btn small" id="exportBtn" type="button">⇩ Экспорт</button>
+          </div>
+        </section>
+
+        <section class="filters">
+          <input id="search" class="field search" placeholder="⌕ Поиск по задачам, номерам и комментариям…">
+          <select id="filterFlow" class="field"><option value="">Все флоу</option></select>
+          <select id="filterAssignee" class="field"><option value="">Все исполнители</option></select>
+          <select id="filterDeveloper" class="field"><option value="">Все разработчики</option></select>
+          <select id="filterCategory" class="field"><option value="">Все категории</option></select>
+          <select id="filterVersion" class="field"><option value="">Все версии</option></select>
+        </section>
+
+        <section id="draftBar" class="draft-bar" hidden>
+          <span id="draftText" class="draft-text"></span>
+          <div class="draft-actions">
+            <button class="btn small primary" id="draftSave" type="button">Сохранить</button>
+            <button class="btn small" id="draftSaveAs" type="button">Сохранить как новое…</button>
+            <button class="btn small" id="draftReset" type="button">Сбросить</button>
+          </div>
+        </section>
+
+        <section id="stats" class="stats"></section>
+
+        <main id="board" class="board">
+          <div class="loading">Загружаем задачи из Google Sheets…</div>
+        </main>
+      </div>
+
+      <!-- Вид базы знаний -->
+      <div id="knowledgeView" hidden>
+        <section class="knowledge-header">
+          <div>
+            <h2 id="knowledgeTitle">База знаний</h2>
+            <div class="subtitle" id="knowledgeSubtitle">Справочники, инструкции, чек-листы</div>
+          </div>
+          <div class="knowledge-actions">
+            <input id="knowledgeSearch" class="field small" placeholder="Поиск по статьям…">
+            <button class="btn primary small" id="newKnowledgeBtn" type="button">＋ Статья</button>
+          </div>
+        </section>
+
+        <section id="knowledgeStats" class="stats"></section>
+
+        <main id="knowledgeBoard" class="knowledge-list">
+          <div class="loading">Загружаем статьи…</div>
+        </main>
+      </div>
+    </div>
+  </div>
+</div>
+
+  <!-- Один и тот же шаблон для создания и редактирования -->
+  <div id="taskOverlay" class="overlay" aria-hidden="true">
+    <section id="taskEditor" class="task-editor" role="dialog" aria-modal="true" aria-labelledby="taskTitle">
+      <!-- 1. Компактная шапка: номер, заголовок, управление окном -->
+      <div class="editor-header">
+        <span id="editorTaskId" class="editor-id"></span>
+        <input id="taskTitle" class="title-field" placeholder="Название задачи…" autocomplete="off">
+        <div class="header-tools">
+          <button class="icon-btn" id="toggleFullscreen" type="button" title="Развернуть на весь экран" aria-label="Развернуть на весь экран">⤢</button>
+          <button class="icon-btn" id="closeEditor" type="button" title="Закрыть" aria-label="Закрыть">✕</button>
+        </div>
+      </div>
+
+      <form id="taskForm" class="editor-form">
+        <!-- 2. Панель свойств: сворачивается, в свёрнутом виде показывает краткую сводку -->
+        <div class="props-section" id="propsSection">
+          <button type="button" class="props-toggle" id="propsToggle" aria-expanded="true" aria-controls="propsPanel" title="Свернуть или развернуть свойства">
+            <span class="props-chevron" aria-hidden="true">▾</span>
+            <span class="props-title">Свойства</span>
+            <span class="props-summary" id="propsSummary"></span>
+          </button>
+          <div class="props-body">
+            <div class="properties-panel" id="propsPanel">
+              <div class="property-grid" id="propertyGrid"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. Основная область текста -->
+        <div class="comment-section" id="commentSection">
+          <div class="comment-head">
+            <span id="commentLabel">Описание и комментарий</span>
+            <span class="comment-hint">Подробности, шаги воспроизведения, ссылки</span>
+          </div>
+          <div class="rich-toolbar" id="richToolbar" role="toolbar" aria-label="Форматирование текста">
+            <button type="button" data-cmd="bold" title="Жирный (Ctrl+B)" aria-label="Жирный"><b>B</b></button>
+            <button type="button" data-cmd="italic" title="Курсив (Ctrl+I)" aria-label="Курсив"><i>I</i></button>
+            <button type="button" data-cmd="underline" title="Подчёркнутый (Ctrl+U)" aria-label="Подчёркнутый"><u>U</u></button>
+            <button type="button" data-cmd="strikeThrough" title="Зачёркнутый" aria-label="Зачёркнутый"><s>S</s></button>
+            <span class="tb-sep"></span>
+            <button type="button" data-cmd="insertUnorderedList" title="Маркированный список" aria-label="Маркированный список"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="2.5" cy="3.5" r="1.5"/><circle cx="2.5" cy="8" r="1.5"/><circle cx="2.5" cy="12.5" r="1.5"/><rect x="6" y="2.75" width="9" height="1.5" rx=".75"/><rect x="6" y="7.25" width="9" height="1.5" rx=".75"/><rect x="6" y="11.75" width="9" height="1.5" rx=".75"/></svg></button>
+            <button type="button" data-cmd="insertOrderedList" title="Нумерованный список" aria-label="Нумерованный список"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><text x="0" y="5.2" font-size="5.5" font-weight="700" font-family="sans-serif">1</text><text x="0" y="9.7" font-size="5.5" font-weight="700" font-family="sans-serif">2</text><text x="0" y="14.2" font-size="5.5" font-weight="700" font-family="sans-serif">3</text><rect x="6" y="2.75" width="9" height="1.5" rx=".75"/><rect x="6" y="7.25" width="9" height="1.5" rx=".75"/><rect x="6" y="11.75" width="9" height="1.5" rx=".75"/></svg></button>
+          </div>
+          <div id="taskComment" class="comment-field is-empty" contenteditable="true"
+               role="textbox" aria-multiline="true" aria-labelledby="commentLabel"
+               data-placeholder="Добавь описание задачи…"></div>
+        </div>
+
+        <div class="editor-footer">
+          <span id="saveStatus" class="save-status">Изменения сохраняются автоматически</span>
+        </div>
+      </form>
+    </section>
+  </div>
+
+ <!-- Общее модальное окно -->
+<div id="modalOverlay" class="overlay modal-overlay" aria-hidden="true">
+  <section id="modalBox" class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle"></section>
+</div>
+
+<div id="dropdownRoot" class="dropdown-root"></div>
+<div id="notice" class="notice" role="status"></div>
+
+  <?!= include('JavaScript'); ?>
+</body>
+</html>

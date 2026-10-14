@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+# Данные и резервные копии никогда не коммитим (репозиторий публичный)
+*.xlsx
+*.csv
+data/
+backup/
+tools/import/out/
+*.seed.sql
