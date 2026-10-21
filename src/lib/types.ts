@@ -29,7 +29,39 @@ export interface Task {
   deleted_at: string | null;
 }
 
+export type PropertyType = 'select' | 'text' | 'url' | 'date';
+
+export interface Property {
+  id: string;
+  board_id: string;
+  name: string;
+  type: PropertyType;
+  position: string;
+  hidden: boolean;
+  archived_at: string | null;
+}
+
+export interface PropertyOption {
+  id: string;
+  property_id: string;
+  label: string;
+  color: ColorName;
+  position: string;
+}
+
+/** Значение свойства у задачи. Заполнено ровно одно поле, зависящее от типа свойства. */
+export interface TaskValue {
+  task_id: string;
+  property_id: string;
+  value_text: string | null;
+  value_date: string | null; // 'YYYY-MM-DD', без часового пояса
+  option_id: string | null;
+}
+
 export interface BoardData {
   columns: Column[];
   tasks: Task[];
+  properties: Property[]; // включая архивные
+  options: PropertyOption[];
+  values: TaskValue[];
 }

@@ -18,6 +18,8 @@ export function humanizeError(message: string | undefined | null): string {
   if (m.includes('failed to fetch') || m.includes('networkerror') || m.includes('network request failed')) {
     return 'Нет связи с сервером. Проверь интернет и попробуй ещё раз.';
   }
+  if (m.includes('properties_name_uniq')) return 'Свойство с таким названием уже есть на этой доске.';
+  if (m.includes('property_options_label_uniq')) return 'Такой вариант в этом списке уже есть.';
   if (m.includes('same password') || m.includes('different from the old')) {
     return 'Новый пароль должен отличаться от текущего.';
   }

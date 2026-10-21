@@ -23,10 +23,14 @@ import {
 import { useActions, useBoardData } from '../features/boards/hooks';
 import { columnDndId, isColumnDndId, isTaskDndId, rawId } from '../lib/dndIds';
 import { compareByPosition } from '../lib/positions';
-import type { Board, Column, Task } from '../lib/types';
+import { COLORS } from '../lib/colors';
+import { formatDate, hostOf, isValidUrl } from '../lib/format';
+import type { Board, Column, Property, Task, TaskValue } from '../lib/types';
 import { ColumnDialog } from './ColumnDialog';
 import { ColumnView } from './ColumnView';
-import { TaskCardView } from './TaskCard';
+import { OptionsDialog } from './OptionsDialog';
+import { PropertiesDialog } from './PropertiesDialog';
+import { TaskCardView, type CardField } from './TaskCard';
 import { TaskDialog } from './TaskDialog';
 
 type Order = Record<string, string[]>; // id колонки -> id карточек по порядку
@@ -35,6 +39,8 @@ type DialogState =
   | { kind: 'newColumn' }
   | { kind: 'editColumn'; column: Column }
   | { kind: 'task'; task: Task }
+  | { kind: 'properties' }
+  | { kind: 'options'; propertyId: string }
   | null;
 
 const cloneOrder = (o: Order): Order => {
@@ -85,6 +91,59 @@ export function BoardView({ board }: { board: Board }) {
   const tasks = useMemo(() => [...(query.data?.tasks ?? [])].sort(compareByPosition), [query.data]);
   const taskById = useMemo(() => new Map<string, Task>(tasks.map((t) => [t.id, t])), [tasks]);
   const columnById = useMemo(() => new Map<string, Column>(columns.map((c) => [c.id, c])), [columns]);
+
+  const properties = useMemo(() => query.data?.properties ?? [], [query.data]);
+  const options = useMemo(() => query.data?.options ?? [], [query.data]);
+  const activeProperties = useMemo(
+    () => properties.filter((p) => p.archived_at === null).sort(compareByPosition),
+    [properties],
+  );
+  const optionById = useMemo(() => new Map(options.map((o) => [o.id, o] as const)), [options]);
+  const valuesByTask = useMemo(() => {
+    const byTask = new Map<string, Map<string, TaskValue>>();
+    for (const v of query.data?.values ?? []) {
+      let inner = byTask.get(v.task_id);
+      if (!inner) {
+        inner = new Map<string, TaskValue>();
+        byTask.set(v.task_id, inner);
+      }
+      inner.set(v.property_id, v);
+    }
+    return byTask;
+  }, [query.data]);
+
+  /** Значения, которые показываются на карточке: только непустые и только у не скрытых свойств. */
+  const fieldsOf = (taskId: string): CardField[] => {
+    const values = valuesByTask.get(taskId);
+    if (!values) return [];
+    const out: CardField[] = [];
+    for (const p of activeProperties) {
+      if (p.hidden) continue;
+      const v = values.get(p.id);
+      if (!v) continue;
+      const base = { id: p.id, name: p.name, type: p.type };
+      if (p.type === 'select') {
+        const option = v.option_id ? optionById.get(v.option_id) : undefined;
+        if (option) out.push({ ...base, text: option.label, color: COLORS[option.color] });
+      } else if (p.type === 'date') {
+        if (v.value_date) out.push({ ...base, text: formatDate(v.value_date) });
+      } else if (p.type === 'url') {
+        if (v.value_text) {
+          out.push(
+            isValidUrl(v.value_text)
+              ? { ...base, text: hostOf(v.value_text), url: v.value_text }
+              : { ...base, text: v.value_text },
+          );
+        }
+      } else if (v.value_text) {
+        out.push({ ...base, text: v.value_text });
+      }
+    }
+    return out;
+  };
+
+  const optionsProperty: Property | null =
+    dialog?.kind === 'options' ? (properties.find((p) => p.id === dialog.propertyId) ?? null) : null;
 
   const serverOrder = useMemo(() => {
     const order: Order = {};
@@ -213,6 +272,12 @@ export function BoardView({ board }: { board: Board }) {
 
   return (
     <>
+      <div className="board-toolbar">
+        <button className="btn small" type="button" onClick={() => setDialog({ kind: 'properties' })}>
+          ⚙ Свойства
+        </button>
+      </div>
+
       <DndContext
         sensors={sensors}
         collisionDetection={collisionDetection}
@@ -229,6 +294,7 @@ export function BoardView({ board }: { board: Board }) {
                   key={c.id}
                   column={c}
                   tasks={tasksOf(c.id)}
+                  fieldsOf={fieldsOf}
                   onAddTask={(title) => actions.createTask(board.id, c.id, title)}
                   onEdit={() => setDialog({ kind: 'editColumn', column: c })}
                   onOpenTask={(task) => setDialog({ kind: 'task', task })}
@@ -277,9 +343,29 @@ export function BoardView({ board }: { board: Board }) {
       )}
       {dialog?.kind === 'task' && (
         <TaskDialog
+          key={dialog.task.id}
+          boardId={board.id}
           task={dialog.task}
-          onSave={(title) => actions.renameTask(board.id, dialog.task, title)}
+          properties={activeProperties}
+          options={options}
+          values={Array.from(valuesByTask.get(dialog.task.id)?.values() ?? [])}
           onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog?.kind === 'properties' && (
+        <PropertiesDialog
+          boardId={board.id}
+          properties={properties}
+          onOptions={(p) => setDialog({ kind: 'options', propertyId: p.id })}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog?.kind === 'options' && optionsProperty && (
+        <OptionsDialog
+          boardId={board.id}
+          property={optionsProperty}
+          options={options.filter((o) => o.property_id === optionsProperty.id).sort(compareByPosition)}
+          onClose={() => setDialog({ kind: 'properties' })}
         />
       )}
     </>

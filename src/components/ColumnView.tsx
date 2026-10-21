@@ -6,7 +6,7 @@ import { columnDndId, taskDndId } from '../lib/dndIds';
 import { useNotice } from '../lib/notice';
 import { humanizeError } from '../lib/supabase';
 import type { Column, Task } from '../lib/types';
-import { SortableTaskCard } from './TaskCard';
+import { SortableTaskCard, type CardField } from './TaskCard';
 
 function AddTask({ onAdd }: { onAdd: (title: string) => Promise<void> }) {
   const { notify } = useNotice();
@@ -66,12 +66,14 @@ function AddTask({ onAdd }: { onAdd: (title: string) => Promise<void> }) {
 export function ColumnView({
   column,
   tasks,
+  fieldsOf,
   onAddTask,
   onEdit,
   onOpenTask,
 }: {
   column: Column;
   tasks: Task[];
+  fieldsOf: (taskId: string) => CardField[];
   onAddTask: (title: string) => Promise<void>;
   onEdit: () => void;
   onOpenTask: (task: Task) => void;
@@ -103,7 +105,7 @@ export function ColumnView({
       <SortableContext items={tasks.map((t) => taskDndId(t.id))} strategy={verticalListSortingStrategy}>
         <div className="cards">
           {tasks.map((t) => (
-            <SortableTaskCard key={t.id} task={t} onOpen={onOpenTask} />
+            <SortableTaskCard key={t.id} task={t} fields={fieldsOf(t.id)} onOpen={onOpenTask} />
           ))}
         </div>
       </SortableContext>

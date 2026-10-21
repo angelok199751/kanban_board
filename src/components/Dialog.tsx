@@ -1,10 +1,36 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { humanizeError } from '../lib/supabase';
 
-export function Dialog({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+// Esc закрывает только верхний из открытых диалогов
+const openDialogs: number[] = [];
+let nextDialogId = 1;
+
+export function Dialog({
+  title,
+  onClose,
+  wide,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  wide?: boolean;
+  children: ReactNode;
+}) {
+  const idRef = useRef(0);
+
+  useEffect(() => {
+    const id = nextDialogId++;
+    idRef.current = id;
+    openDialogs.push(id);
+    return () => {
+      const i = openDialogs.indexOf(id);
+      if (i >= 0) openDialogs.splice(i, 1);
+    };
+  }, []);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape' && openDialogs[openDialogs.length - 1] === idRef.current) onClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -12,7 +38,7 @@ export function Dialog({ title, onClose, children }: { title: string; onClose: (
 
   return (
     <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="card dialog" role="dialog" aria-modal="true" aria-label={title}>
+      <div className={wide ? 'card dialog wide' : 'card dialog'} role="dialog" aria-modal="true" aria-label={title}>
         <h2>{title}</h2>
         {children}
       </div>

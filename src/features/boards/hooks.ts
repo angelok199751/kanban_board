@@ -1,8 +1,8 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { humanizeError } from '../../lib/supabase';
 import { useNotice } from '../../lib/notice';
-import { compareByPosition, keyBetween, nKeys } from '../../lib/positions';
-import type { BoardData, ColorName, Column, Task } from '../../lib/types';
+import { compareByPosition, keyBetween, planMove } from '../../lib/positions';
+import type { BoardData, ColorName, Property, PropertyType, Task, TaskValue } from '../../lib/types';
 import * as api from './api';
 
 export const qk = {
@@ -26,10 +26,16 @@ function messageOf(e: unknown): string {
   return humanizeError(e instanceof Error ? e.message : String(e));
 }
 
+const lastPosition = (items: { position: string; id: string }[]): string | null => {
+  const sorted = [...items].sort(compareByPosition);
+  return sorted.length > 0 ? sorted[sorted.length - 1].position : null;
+};
+
 /**
- * Действия над досками, колонками и карточками.
- * Методы создания и переименования бросают ошибку (её показывает диалог).
- * Методы переноса (moveColumn, moveTask) применяют перенос сразу, а при ошибке откатывают его и показывают уведомление.
+ * Действия над досками, колонками, карточками и свойствами.
+ * Методы создания и изменения бросают ошибку (её показывает диалог).
+ * Методы переноса (moveColumn, moveTask, moveProperty) применяют перенос сразу,
+ * а при ошибке откатывают его и показывают уведомление.
  */
 export function useActions() {
   const qc = useQueryClient();
@@ -37,15 +43,18 @@ export function useActions() {
 
   const boardCache = (boardId: string) => qc.getQueryData<BoardData>(qk.board(boardId));
   const refresh = (boardId: string) => qc.invalidateQueries({ queryKey: qk.board(boardId) });
+  const patchCache = (boardId: string, fn: (d: BoardData) => BoardData) => {
+    const d = boardCache(boardId);
+    if (d) qc.setQueryData<BoardData>(qk.board(boardId), fn(d));
+  };
 
   // ------------------------------------------------------------ доски
   async function createBoard(name: string, description: string) {
     const boards = qc.getQueryData<{ position: string; id: string }[]>(qk.boards) ?? [];
-    const last = [...boards].sort(compareByPosition).pop();
     const created = await api.createBoard({
       name: name.trim(),
       description: description.trim() === '' ? null : description.trim(),
-      position: keyBetween(last ? last.position : null, null),
+      position: keyBetween(lastPosition(boards), null),
     });
     await qc.invalidateQueries({ queryKey: qk.boards });
     return created;
@@ -61,13 +70,11 @@ export function useActions() {
 
   // ------------------------------------------------------------ колонки
   async function createColumn(boardId: string, name: string, color: ColorName) {
-    const columns = [...(boardCache(boardId)?.columns ?? [])].sort(compareByPosition);
-    const last = columns[columns.length - 1];
     await api.createColumn({
       board_id: boardId,
       name: name.trim(),
       color,
-      position: keyBetween(last ? last.position : null, null),
+      position: keyBetween(lastPosition(boardCache(boardId)?.columns ?? []), null),
     });
     await refresh(boardId);
   }
@@ -81,31 +88,19 @@ export function useActions() {
   async function moveColumn(boardId: string, columnId: string, orderedIds: string[]) {
     const before = boardCache(boardId);
     if (!before) return;
-    const byId = new Map<string, Column>(before.columns.map((c) => [c.id, c]));
-    const i = orderedIds.indexOf(columnId);
-    if (i < 0) return;
-    const prevPos = i > 0 ? (byId.get(orderedIds[i - 1])?.position ?? null) : null;
-    const nextPos = i < orderedIds.length - 1 ? (byId.get(orderedIds[i + 1])?.position ?? null) : null;
+    const plan = planMove(new Map(before.columns.map((c) => [c.id, c.position] as const)), orderedIds, columnId);
+    if (!plan) return;
+    const posById = new Map(plan.map((u) => [u.id, u.position] as const));
 
-    let updates: { id: string; position: string }[];
-    try {
-      updates = [{ id: columnId, position: keyBetween(prevPos, nextPos) }];
-    } catch {
-      // ключи соседей совпали или перепутаны: перенумеруем все колонки
-      const keys = nKeys(orderedIds.length);
-      updates = orderedIds.map((id, idx) => ({ id, position: keys[idx] }));
-    }
-
-    const posById = new Map(updates.map((u) => [u.id, u.position] as const));
-    qc.setQueryData<BoardData>(qk.board(boardId), {
-      ...before,
-      columns: before.columns.map((c) => {
+    patchCache(boardId, (d) => ({
+      ...d,
+      columns: d.columns.map((c) => {
         const p = posById.get(c.id);
         return p === undefined ? c : { ...c, position: p };
       }),
-    });
+    }));
     try {
-      await Promise.all(updates.map((u) => api.updateColumn(u.id, { position: u.position })));
+      await Promise.all(plan.map((u) => api.updateColumn(u.id, { position: u.position })));
     } catch (e) {
       qc.setQueryData<BoardData>(qk.board(boardId), before);
       notify(`Не удалось переставить колонку: ${messageOf(e)}`);
@@ -116,21 +111,20 @@ export function useActions() {
 
   // ------------------------------------------------------------ карточки
   async function createTask(boardId: string, columnId: string, title: string) {
-    const inColumn = (boardCache(boardId)?.tasks ?? []).filter((t) => t.column_id === columnId).sort(compareByPosition);
-    const last = inColumn[inColumn.length - 1];
+    const inColumn = (boardCache(boardId)?.tasks ?? []).filter((t) => t.column_id === columnId);
     await api.createTask({
       board_id: boardId,
       column_id: columnId,
       title: title.trim(),
-      position: keyBetween(last ? last.position : null, null),
+      position: keyBetween(lastPosition(inColumn), null),
     });
     await refresh(boardId);
   }
 
-  /** Сохранение названия с проверкой версии: чужие изменения молча не затираем. */
-  async function renameTask(boardId: string, task: Task, title: string) {
+  /** Сохранение названия с проверкой версии: чужие изменения молча не затираем. Возвращает обновлённую карточку. */
+  async function renameTask(boardId: string, task: Task, title: string): Promise<Task> {
     try {
-      await api.updateTask(task.id, { title: title.trim() }, task.version);
+      return await api.updateTask(task.id, { title: title.trim() }, task.version);
     } finally {
       await refresh(boardId);
     }
@@ -140,33 +134,21 @@ export function useActions() {
   async function moveTask(boardId: string, taskId: string, columnId: string, orderedIds: string[]) {
     const before = boardCache(boardId);
     if (!before) return;
-    const byId = new Map<string, Task>(before.tasks.map((t) => [t.id, t]));
-    const i = orderedIds.indexOf(taskId);
-    if (i < 0) return;
-    const prevPos = i > 0 ? (byId.get(orderedIds[i - 1])?.position ?? null) : null;
-    const nextPos = i < orderedIds.length - 1 ? (byId.get(orderedIds[i + 1])?.position ?? null) : null;
-
-    type Patch = { column_id?: string; position?: string };
-    let updates: { id: string; patch: Patch }[];
-    try {
-      updates = [{ id: taskId, patch: { column_id: columnId, position: keyBetween(prevPos, nextPos) } }];
-    } catch {
-      // ключи соседей совпали или перепутаны: перенумеруем карточки колонки
-      const keys = nKeys(orderedIds.length);
-      updates = orderedIds.map((id, idx) => ({
-        id,
-        patch: id === taskId ? { column_id: columnId, position: keys[idx] } : { position: keys[idx] },
-      }));
-    }
-
+    const plan = planMove(new Map(before.tasks.map((t) => [t.id, t.position] as const)), orderedIds, taskId);
+    if (!plan) return;
+    const updates = plan.map((u) => ({
+      id: u.id,
+      patch: u.id === taskId ? { column_id: columnId, position: u.position } : { position: u.position },
+    }));
     const patchById = new Map(updates.map((u) => [u.id, u.patch] as const));
-    qc.setQueryData<BoardData>(qk.board(boardId), {
-      ...before,
-      tasks: before.tasks.map((t) => {
+
+    patchCache(boardId, (d) => ({
+      ...d,
+      tasks: d.tasks.map((t) => {
         const p = patchById.get(t.id);
         return p === undefined ? t : { ...t, ...p };
       }),
-    });
+    }));
     try {
       await Promise.all(updates.map((u) => api.updateTask(u.id, u.patch)));
     } catch (e) {
@@ -177,5 +159,147 @@ export function useActions() {
     }
   }
 
-  return { createBoard, renameBoard, createColumn, updateColumn, moveColumn, createTask, renameTask, moveTask };
+  // ------------------------------------------------------------ свойства
+  async function createProperty(boardId: string, name: string, type: PropertyType) {
+    await api.createProperty({
+      board_id: boardId,
+      name: name.trim(),
+      type,
+      position: keyBetween(lastPosition(boardCache(boardId)?.properties ?? []), null),
+    });
+    await refresh(boardId);
+  }
+
+  async function renameProperty(boardId: string, id: string, name: string) {
+    try {
+      await api.updateProperty(id, { name: name.trim() });
+    } finally {
+      await refresh(boardId);
+    }
+  }
+
+  async function setPropertyHidden(boardId: string, id: string, hidden: boolean) {
+    try {
+      await api.updateProperty(id, { hidden });
+    } finally {
+      await refresh(boardId);
+    }
+  }
+
+  /** «Удаление» свойства: уходит в архив вместе со значениями, вернуть можно. */
+  async function setPropertyArchived(boardId: string, id: string, archived: boolean) {
+    try {
+      await api.updateProperty(id, { archived_at: archived ? new Date().toISOString() : null });
+    } finally {
+      await refresh(boardId);
+    }
+  }
+
+  /** orderedIds: все свойства доски в новом порядке. */
+  async function moveProperty(boardId: string, propertyId: string, orderedIds: string[]) {
+    const before = boardCache(boardId);
+    if (!before) return;
+    const plan = planMove(new Map(before.properties.map((p) => [p.id, p.position] as const)), orderedIds, propertyId);
+    if (!plan) return;
+    const posById = new Map(plan.map((u) => [u.id, u.position] as const));
+
+    patchCache(boardId, (d) => ({
+      ...d,
+      properties: d.properties.map((p) => {
+        const pos = posById.get(p.id);
+        return pos === undefined ? p : { ...p, position: pos };
+      }),
+    }));
+    try {
+      await Promise.all(plan.map((u) => api.updateProperty(u.id, { position: u.position })));
+    } catch (e) {
+      qc.setQueryData<BoardData>(qk.board(boardId), before);
+      notify(`Не удалось переставить свойство: ${messageOf(e)}`);
+    } finally {
+      void refresh(boardId);
+    }
+  }
+
+  // ------------------------------------------------------------ варианты списка
+  async function createOption(boardId: string, propertyId: string, label: string, color: ColorName) {
+    const options = (boardCache(boardId)?.options ?? []).filter((o) => o.property_id === propertyId);
+    try {
+      await api.createOption({
+        property_id: propertyId,
+        label: label.trim(),
+        color,
+        position: keyBetween(lastPosition(options), null),
+      });
+    } finally {
+      await refresh(boardId);
+    }
+  }
+
+  async function updateOption(boardId: string, id: string, patch: { label?: string; color?: ColorName }) {
+    try {
+      await api.updateOption(id, { ...patch, label: patch.label === undefined ? undefined : patch.label.trim() });
+    } finally {
+      await refresh(boardId);
+    }
+  }
+
+  /** Сколько карточек (включая архивные и из корзины) используют вариант. */
+  function optionUsage(boardId: string, optionId: string): number {
+    return (boardCache(boardId)?.values ?? []).filter((v) => v.option_id === optionId).length;
+  }
+
+  /** Удаляет вариант. Если он выбран в карточках, сначала очищает эти значения: интерфейс спрашивает подтверждение заранее. */
+  async function deleteOption(boardId: string, optionId: string) {
+    try {
+      if (optionUsage(boardId, optionId) > 0) await api.clearOptionValues(optionId);
+      await api.deleteOption(optionId);
+    } finally {
+      await refresh(boardId);
+    }
+  }
+
+  // ------------------------------------------------------------ значения свойств
+  /**
+   * Сохраняет значение свойства у карточки. raw: для списка id варианта, для остальных текст или 'YYYY-MM-DD'.
+   * Пустое значение удаляет запись. Последняя запись побеждает (защита от одновременной правки одного поля будет на этапе 8).
+   */
+  async function setTaskValue(boardId: string, taskId: string, property: Property, raw: string | null) {
+    const value = raw === null ? '' : raw.trim();
+    const same = (v: TaskValue) => v.task_id === taskId && v.property_id === property.id;
+
+    if (value === '') {
+      await api.deleteValue(taskId, property.id);
+      patchCache(boardId, (d) => ({ ...d, values: d.values.filter((v) => !same(v)) }));
+      return;
+    }
+    const saved = await api.upsertValue({
+      task_id: taskId,
+      property_id: property.id,
+      value_text: property.type === 'text' || property.type === 'url' ? value : null,
+      value_date: property.type === 'date' ? value : null,
+      option_id: property.type === 'select' ? value : null,
+    });
+    patchCache(boardId, (d) => ({ ...d, values: [...d.values.filter((v) => !same(v)), saved] }));
+  }
+
+  return {
+    createBoard,
+    renameBoard,
+    createColumn,
+    updateColumn,
+    moveColumn,
+    createTask,
+    renameTask,
+    moveTask,
+    createProperty,
+    renameProperty,
+    setPropertyHidden,
+    setPropertyArchived,
+    moveProperty,
+    createOption,
+    updateOption,
+    optionUsage,
+    deleteOption,
+    setTaskValue,
+  };
 }
