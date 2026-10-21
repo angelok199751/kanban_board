@@ -9,11 +9,13 @@ export function Dialog({
   title,
   onClose,
   wide,
+  full,
   children,
 }: {
   title: string;
   onClose: () => void;
   wide?: boolean;
+  full?: boolean;
   children: ReactNode;
 }) {
   const idRef = useRef(0);
@@ -38,7 +40,7 @@ export function Dialog({
 
   return (
     <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className={wide ? 'card dialog wide' : 'card dialog'} role="dialog" aria-modal="true" aria-label={title}>
+      <div className={full ? 'card dialog full' : wide ? 'card dialog wide' : 'card dialog'} role="dialog" aria-modal="true" aria-label={title}>
         <h2>{title}</h2>
         {children}
       </div>

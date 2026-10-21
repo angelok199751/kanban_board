@@ -65,3 +65,21 @@ export interface BoardData {
   options: PropertyOption[];
   values: TaskValue[];
 }
+
+/** Сохранённое представление доски: общее (owner_id пустой) или личное. */
+export interface SavedView {
+  id: string;
+  board_id: string;
+  owner_id: string | null;
+  name: string;
+  config: unknown;
+  position: string;
+}
+
+/** Полная карточка (с описанием) для окна редактирования. */
+export interface TaskFull {
+  id: string;
+  title: string;
+  description_html: string;
+  version: number;
+}

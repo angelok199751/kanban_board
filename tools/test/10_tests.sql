@@ -1,4 +1,4 @@
--- Тесты схемы, триггеров и RLS для миграций 001 и 002.
+-- Тесты схемы, триггеров и RLS для миграций 001, 002 и 003.
 --
 -- Запуск (локальный PostgreSQL 14+; подробности в tools/test/README.md):
 --   psql -v ON_ERROR_STOP=1 -d qaflow_test -f tools/test/10_tests.sql
@@ -373,6 +373,30 @@ begin
 end $$;
 rollback;
 \echo T8 ok: управление участниками только у admin
+
+-- ===========================================================================
+-- T9. search_text: описание без HTML-тегов (миграция 003)
+-- ===========================================================================
+begin;
+set local role authenticated;
+select set_config('request.jwt.claim.sub', :'bob', true);
+do $$
+declare b uuid; c uuid; t uuid; s text;
+begin
+  insert into public.boards (name, position) values ('Доска', 'a0') returning id into b;
+  insert into public.board_columns (board_id, name, position) values (b, 'Колонка', 'a0') returning id into c;
+  insert into public.tasks (board_id, column_id, title, description_html, position)
+    values (b, c, 'Задача', '<p>Привет <b>мир</b></p>', 'a0') returning id, search_text into t, s;
+
+  assert position('<' in s) = 0, 'T9: в search_text остались теги';
+  assert s like '%Привет%' and s like '%мир%', 'T9: в search_text потерян текст';
+
+  update public.tasks set description_html = '<i>новое</i>' where id = t;
+  select search_text into s from public.tasks where id = t;
+  assert s like '%новое%' and s not like '%мир%', 'T9: search_text не обновился вместе с описанием';
+end $$;
+rollback;
+\echo T9 ok: search_text без тегов и обновляется
 
 \echo ============================================
 \echo ВСЕ ТЕСТЫ ПРОШЛИ

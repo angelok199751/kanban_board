@@ -1,3 +1,4 @@
+import { likePattern } from '../../lib/search';
 import { supabase } from '../../lib/supabase';
 import type {
   Board,
@@ -7,7 +8,9 @@ import type {
   Property,
   PropertyOption,
   PropertyType,
+  SavedView,
   Task,
+  TaskFull,
   TaskValue,
 } from '../../lib/types';
 
@@ -225,4 +228,69 @@ export async function deleteValue(taskId: string, propertyId: string): Promise<v
   await run<unknown[]>(
     supabase.from('task_values').delete().eq('task_id', taskId).eq('property_id', propertyId).select('task_id'),
   );
+}
+
+// ---------------------------------------------------------------- полная карточка и поиск
+
+/** Свежая карточка с описанием: окно редактирования берёт версию отсюда, а не из списка доски. */
+export async function getTaskFull(id: string): Promise<TaskFull | null> {
+  const rows = await run<TaskFull[]>(
+    supabase.from('tasks').select('id, title, description_html, version').eq('id', id).is('deleted_at', null),
+  );
+  return rows.length > 0 ? rows[0] : null;
+}
+
+export async function saveTask(
+  id: string,
+  patch: { title?: string; description_html?: string },
+  expectedVersion: number,
+): Promise<Task> {
+  const rows = await run<Task[]>(
+    supabase.from('tasks').update(patch).eq('id', id).eq('version', expectedVersion).select(TASK_FIELDS),
+  );
+  if (rows.length === 0) throw new ConflictError();
+  return rows[0];
+}
+
+/** Id карточек доски, в названии или описании которых есть строка (без учёта регистра). */
+export async function searchTaskIds(boardId: string, query: string): Promise<string[]> {
+  const pattern = likePattern(query.trim());
+  const rows = await fetchAll<{ id: string }>((from, to) =>
+    supabase
+      .from('tasks')
+      .select('id')
+      .eq('board_id', boardId)
+      .is('archived_at', null)
+      .is('deleted_at', null)
+      .or(`title.ilike.${pattern},search_text.ilike.${pattern}`)
+      .order('id')
+      .range(from, to),
+  );
+  return rows.map((r) => r.id);
+}
+
+// ---------------------------------------------------------------- представления
+
+const VIEW_FIELDS = 'id, board_id, owner_id, name, config, position';
+
+export function listViews(boardId: string): Promise<SavedView[]> {
+  return run<SavedView[]>(supabase.from('views').select(VIEW_FIELDS).eq('board_id', boardId).order('position'));
+}
+
+export function createView(input: {
+  board_id: string;
+  owner_id: string | null;
+  name: string;
+  config: unknown;
+  position: string;
+}): Promise<SavedView> {
+  return run<SavedView>(supabase.from('views').insert(input).select(VIEW_FIELDS).single());
+}
+
+export function updateView(id: string, patch: { name?: string; config?: unknown }): Promise<SavedView> {
+  return run<SavedView>(supabase.from('views').update(patch).eq('id', id).select(VIEW_FIELDS).single());
+}
+
+export async function deleteView(id: string): Promise<void> {
+  await run<unknown[]>(supabase.from('views').delete().eq('id', id).select('id'));
 }

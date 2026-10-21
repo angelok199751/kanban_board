@@ -20,18 +20,29 @@ import {
   SortableContext,
   sortableKeyboardCoordinates,
 } from '@dnd-kit/sortable';
-import { useActions, useBoardData } from '../features/boards/hooks';
-import { columnDndId, isColumnDndId, isTaskDndId, rawId } from '../lib/dndIds';
-import { compareByPosition } from '../lib/positions';
+import { useAuth } from '../auth/AuthProvider';
+import { useActions, useBoardData, useSearchIds, useViews } from '../features/boards/hooks';
+import { useViewState } from '../features/boards/useViewState';
 import { COLORS } from '../lib/colors';
+import { columnDndId, isColumnDndId, isTaskDndId, rawId } from '../lib/dndIds';
 import { formatDate, hostOf, isValidUrl } from '../lib/format';
-import type { Board, Column, Property, Task, TaskValue } from '../lib/types';
+import { useNotice } from '../lib/notice';
+import { mergeIntoFull } from '../lib/order';
+import { compareByPosition } from '../lib/positions';
+import { humanizeError } from '../lib/supabase';
+import type { Board, Column, Property, SavedView, Task, TaskValue } from '../lib/types';
+import { useDebounced } from '../lib/useDebounced';
+import { countActiveFilters, isShownOnCard, matchesFilters, sortTasks, type ViewContext } from '../lib/viewConfig';
 import { ColumnDialog } from './ColumnDialog';
 import { ColumnView } from './ColumnView';
+import { FieldsDialog } from './FieldsDialog';
+import { FiltersDialog } from './FiltersDialog';
 import { OptionsDialog } from './OptionsDialog';
 import { PropertiesDialog } from './PropertiesDialog';
 import { TaskCardView, type CardField } from './TaskCard';
 import { TaskDialog } from './TaskDialog';
+import { ManageViewDialog, SaveViewDialog } from './ViewDialog';
+import { ViewBar } from './ViewBar';
 
 type Order = Record<string, string[]>; // id колонки -> id карточек по порядку
 
@@ -41,6 +52,10 @@ type DialogState =
   | { kind: 'task'; task: Task }
   | { kind: 'properties' }
   | { kind: 'options'; propertyId: string }
+  | { kind: 'filters' }
+  | { kind: 'fields' }
+  | { kind: 'saveView' }
+  | { kind: 'manageView'; view: SavedView }
   | null;
 
 const cloneOrder = (o: Order): Order => {
@@ -53,6 +68,8 @@ const findContainer = (o: Order, taskId: string): string | undefined =>
   Object.keys(o).find((key) => o[key].includes(taskId));
 
 const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((v, i) => v === b[i]);
+
+const errText = (e: unknown) => humanizeError(e instanceof Error ? e.message : String(e));
 
 /**
  * Выбор цели при перетаскивании. Колонка тянется только к другим колонкам.
@@ -76,17 +93,34 @@ const collisionDetection: CollisionDetection = (args) => {
 
 export function BoardView({ board }: { board: Board }) {
   const query = useBoardData(board.id);
+  const viewsQuery = useViews(board.id);
   const actions = useActions();
+  const { notify } = useNotice();
+  const { state: auth } = useAuth();
+  const userId = auth.status === 'ready' ? auth.session.user.id : null;
+
   const [dialog, setDialog] = useState<DialogState>(null);
   const [dragOrder, setDragOrder] = useState<Order | null>(null);
   const [activeTask, setActiveTask] = useState<Task | null>(null);
   const [activeColumn, setActiveColumn] = useState<Column | null>(null);
+  const [search, setSearch] = useState('');
+  const debouncedSearch = useDebounced(search, 300);
+  const searchQuery = useSearchIds(board.id, debouncedSearch);
+
+  // общие представления слева, личные справа; внутри группы по порядку создания
+  const views = useMemo(() => {
+    const all = [...(viewsQuery.data ?? [])].sort(compareByPosition);
+    return [...all.filter((v) => v.owner_id === null), ...all.filter((v) => v.owner_id !== null)];
+  }, [viewsQuery.data]);
+  const view = useViewState(board.id, views, viewsQuery.isSuccess);
+  const config = view.config;
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
+  // ------------------------------------------------------------ данные доски
   const columns = useMemo(() => [...(query.data?.columns ?? [])].sort(compareByPosition), [query.data]);
   const tasks = useMemo(() => [...(query.data?.tasks ?? [])].sort(compareByPosition), [query.data]);
   const taskById = useMemo(() => new Map<string, Task>(tasks.map((t) => [t.id, t])), [tasks]);
@@ -98,6 +132,7 @@ export function BoardView({ board }: { board: Board }) {
     () => properties.filter((p) => p.archived_at === null).sort(compareByPosition),
     [properties],
   );
+  const propertyMap = useMemo(() => new Map(activeProperties.map((p) => [p.id, p] as const)), [activeProperties]);
   const optionById = useMemo(() => new Map(options.map((o) => [o.id, o] as const)), [options]);
   const valuesByTask = useMemo(() => {
     const byTask = new Map<string, Map<string, TaskValue>>();
@@ -112,13 +147,56 @@ export function BoardView({ board }: { board: Board }) {
     return byTask;
   }, [query.data]);
 
-  /** Значения, которые показываются на карточке: только непустые и только у не скрытых свойств. */
+  const ctx: ViewContext = useMemo(
+    () => ({ properties: propertyMap, options: optionById, valuesOf: (id) => valuesByTask.get(id) }),
+    [propertyMap, optionById, valuesByTask],
+  );
+
+  // ------------------------------------------------------------ поиск, фильтры, сортировка
+  const searching = debouncedSearch.trim() !== '';
+  const searchIds = useMemo(() => {
+    if (!searching) return null;
+    const ids = new Set<string>(searchQuery.data ?? []);
+    const asNumber = debouncedSearch.trim().replace(/^#/, '');
+    if (/^\d+$/.test(asNumber)) for (const t of tasks) if (String(t.number) === asNumber) ids.add(t.id);
+    return ids;
+  }, [searching, searchQuery.data, debouncedSearch, tasks]);
+
+  const visibleTasks = useMemo(
+    () => tasks.filter((t) => (searchIds === null || searchIds.has(t.id)) && matchesFilters(t, config.filters, ctx)),
+    [tasks, searchIds, config.filters, ctx],
+  );
+
+  // порядок «как в базе» (по position): нужен для сохранения переноса
+  const fullOrder = useMemo(() => {
+    const order: Order = {};
+    for (const c of columns) order[c.id] = [];
+    for (const t of tasks) order[t.column_id]?.push(t.id);
+    return order;
+  }, [columns, tasks]);
+
+  // порядок на экране: после фильтров и сортировки
+  const displayOrder = useMemo(() => {
+    const order: Order = {};
+    for (const c of columns) order[c.id] = [];
+    for (const t of sortTasks(visibleTasks, config.sort, ctx)) order[t.column_id]?.push(t.id);
+    return order;
+  }, [columns, visibleTasks, config.sort, ctx]);
+
+  const order = dragOrder ?? displayOrder;
+  const filterCount = countActiveFilters(config, propertyMap);
+  const manualSort = config.sort.key === 'manual';
+
+  const tasksOf = (columnId: string): Task[] =>
+    (order[columnId] ?? []).map((id) => taskById.get(id)).filter((t): t is Task => t !== undefined);
+
+  /** Значения, которые показываются на карточке: только непустые и только у свойств, включённых в этом представлении. */
   const fieldsOf = (taskId: string): CardField[] => {
     const values = valuesByTask.get(taskId);
     if (!values) return [];
     const out: CardField[] = [];
     for (const p of activeProperties) {
-      if (p.hidden) continue;
+      if (!isShownOnCard(p, config)) continue;
       const v = values.get(p.id);
       if (!v) continue;
       const base = { id: p.id, name: p.name, type: p.type };
@@ -145,27 +223,12 @@ export function BoardView({ board }: { board: Board }) {
   const optionsProperty: Property | null =
     dialog?.kind === 'options' ? (properties.find((p) => p.id === dialog.propertyId) ?? null) : null;
 
-  const serverOrder = useMemo(() => {
-    const order: Order = {};
-    for (const c of columns) order[c.id] = [];
-    for (const t of tasks) {
-      const list = order[t.column_id];
-      if (list) list.push(t.id);
-    }
-    return order;
-  }, [columns, tasks]);
-
-  const order = dragOrder ?? serverOrder;
-
-  const tasksOf = (columnId: string): Task[] =>
-    (order[columnId] ?? []).map((id) => taskById.get(id)).filter((t): t is Task => t !== undefined);
-
   // ------------------------------------------------------------ перетаскивание
   function onDragStart(e: DragStartEvent) {
     const id = String(e.active.id);
     if (isTaskDndId(id)) {
       setActiveTask(taskById.get(rawId(id)) ?? null);
-      setDragOrder(cloneOrder(serverOrder));
+      setDragOrder(cloneOrder(displayOrder));
     } else if (isColumnDndId(id)) {
       setActiveColumn(columnById.get(rawId(id)) ?? null);
     }
@@ -181,7 +244,7 @@ export function BoardView({ board }: { board: Board }) {
     const taskId = rawId(activeId);
 
     setDragOrder((prev) => {
-      const cur = prev ?? serverOrder;
+      const cur = prev ?? displayOrder;
       const from = findContainer(cur, taskId);
       if (!from) return prev;
 
@@ -227,7 +290,7 @@ export function BoardView({ board }: { board: Board }) {
 
     // ---- карточка
     const taskId = rawId(activeId);
-    const cur = dragOrder ?? serverOrder;
+    const cur = dragOrder ?? displayOrder;
     let finalOrder = cur;
     if (over && isTaskDndId(String(over.id))) {
       const overTaskId = rawId(String(over.id));
@@ -246,8 +309,26 @@ export function BoardView({ board }: { board: Board }) {
       setDragOrder(null);
       return;
     }
-    const unchanged = original.column_id === container && sameList(serverOrder[container] ?? [], finalOrder[container]);
-    if (!unchanged) void actions.moveTask(board.id, taskId, container, finalOrder[container]);
+
+    const visibleFinal = finalOrder[container];
+    const full = fullOrder[container] ?? [];
+    let orderedIds: string[];
+    if (manualSort) {
+      // ручной порядок: ставим карточку на выбранное место среди видимых, скрытые остаются на местах
+      if (original.column_id === container && sameList(displayOrder[container] ?? [], visibleFinal)) {
+        setDragOrder(null);
+        return;
+      }
+      orderedIds = mergeIntoFull(full, visibleFinal, taskId);
+    } else {
+      // порядок внутри колонки задаёт сортировка: сохраняем только перенос в другую колонку (в её конец)
+      if (original.column_id === container) {
+        setDragOrder(null);
+        return;
+      }
+      orderedIds = [...full.filter((id) => id !== taskId), taskId];
+    }
+    void actions.moveTask(board.id, taskId, container, orderedIds);
     setDragOrder(null);
   }
 
@@ -255,6 +336,21 @@ export function BoardView({ board }: { board: Board }) {
     setActiveTask(null);
     setActiveColumn(null);
     setDragOrder(null);
+  }
+
+  // ------------------------------------------------------------ представления
+  async function saveActiveView() {
+    if (!view.activeView) return;
+    try {
+      await actions.updateView(board.id, view.activeView.id, { config });
+    } catch (e) {
+      notify(`Не удалось сохранить представление: ${errText(e)}`);
+    }
+  }
+
+  async function saveViewAs(name: string, personal: boolean) {
+    const created = await actions.createView(board.id, personal ? userId : null, name, config);
+    view.select(created.id, true);
   }
 
   // ------------------------------------------------------------ вывод
@@ -270,12 +366,79 @@ export function BoardView({ board }: { board: Board }) {
     );
   }
 
+  const sortOptions: { value: string; label: string }[] = [
+    { value: 'manual', label: 'Вручную' },
+    { value: 'number', label: 'Номер' },
+    { value: 'title', label: 'Название' },
+    ...activeProperties.map((p) => ({ value: p.id, label: p.name })),
+  ];
+  // если выбрана сортировка по исчезнувшему свойству, показываем «Вручную»
+  const sortValue = sortOptions.some((o) => o.value === config.sort.key) ? config.sort.key : 'manual';
+
   return (
     <>
+      <ViewBar
+        views={views}
+        activeId={view.activeId}
+        dirty={view.dirty}
+        onSelect={(id) => view.select(id)}
+        onSave={() => void saveActiveView()}
+        onSaveAs={() => setDialog({ kind: 'saveView' })}
+        onReset={view.reset}
+        onManage={(v) => setDialog({ kind: 'manageView', view: v })}
+      />
+
       <div className="board-toolbar">
+        <input
+          className="field search"
+          type="search"
+          placeholder="Поиск по названию, номеру и описанию…"
+          aria-label="Поиск по карточкам"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <button className="btn small" type="button" onClick={() => setDialog({ kind: 'filters' })}>
+          Фильтры{filterCount > 0 && <span className="badge">{filterCount}</span>}
+        </button>
+        <select
+          className="field small"
+          aria-label="Сортировка"
+          value={sortValue}
+          onChange={(e) => view.update({ sort: { key: e.target.value, dir: config.sort.dir } })}
+        >
+          {sortOptions.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.value === 'manual' ? 'Порядок: вручную' : `Сортировка: ${o.label}`}
+            </option>
+          ))}
+        </select>
+        <button
+          className="btn small icon"
+          type="button"
+          disabled={sortValue === 'manual'}
+          title="Направление сортировки"
+          aria-label="Направление сортировки"
+          onClick={() => view.update({ sort: { key: sortValue, dir: config.sort.dir === 'asc' ? 'desc' : 'asc' } })}
+        >
+          {config.sort.dir === 'asc' ? '↑' : '↓'}
+        </button>
+        <button
+          className={config.compact ? 'btn small pressed' : 'btn small'}
+          type="button"
+          aria-pressed={config.compact}
+          onClick={() => view.update({ compact: !config.compact })}
+        >
+          ▤ Компактно
+        </button>
+        <button className="btn small" type="button" onClick={() => setDialog({ kind: 'fields' })}>
+          Поля
+        </button>
         <button className="btn small" type="button" onClick={() => setDialog({ kind: 'properties' })}>
           ⚙ Свойства
         </button>
+        {searching && searchQuery.isError && (
+          <span className="error-inline small-text">Поиск не сработал: {errText(searchQuery.error)}</span>
+        )}
       </div>
 
       <DndContext
@@ -295,6 +458,7 @@ export function BoardView({ board }: { board: Board }) {
                   column={c}
                   tasks={tasksOf(c.id)}
                   fieldsOf={fieldsOf}
+                  compact={config.compact}
                   onAddTask={(title) => actions.createTask(board.id, c.id, title)}
                   onEdit={() => setDialog({ kind: 'editColumn', column: c })}
                   onOpenTask={(task) => setDialog({ kind: 'task', task })}
@@ -312,7 +476,7 @@ export function BoardView({ board }: { board: Board }) {
 
         <DragOverlay>
           {activeTask ? (
-            <TaskCardView task={activeTask} className="overlay" />
+            <TaskCardView task={activeTask} compact={config.compact} className="overlay" />
           ) : activeColumn ? (
             <div className="column overlay">
               <header className="column-head">
@@ -366,6 +530,35 @@ export function BoardView({ board }: { board: Board }) {
           property={optionsProperty}
           options={options.filter((o) => o.property_id === optionsProperty.id).sort(compareByPosition)}
           onClose={() => setDialog({ kind: 'properties' })}
+        />
+      )}
+      {dialog?.kind === 'filters' && (
+        <FiltersDialog
+          properties={activeProperties}
+          options={options}
+          config={config}
+          onChange={(filters) => view.update({ filters })}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog?.kind === 'fields' && (
+        <FieldsDialog
+          properties={activeProperties}
+          config={config}
+          onChange={(cardProps) => view.update({ cardProps })}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog?.kind === 'saveView' && <SaveViewDialog onSubmit={saveViewAs} onClose={() => setDialog(null)} />}
+      {dialog?.kind === 'manageView' && (
+        <ManageViewDialog
+          view={dialog.view}
+          onRename={(name) => actions.updateView(board.id, dialog.view.id, { name })}
+          onDelete={async () => {
+            await actions.deleteView(board.id, dialog.view.id);
+            if (view.activeId === dialog.view.id) view.select(null);
+          }}
+          onClose={() => setDialog(null)}
         />
       )}
     </>

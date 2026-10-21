@@ -1,8 +1,8 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { humanizeError } from '../../lib/supabase';
 import { useNotice } from '../../lib/notice';
 import { compareByPosition, keyBetween, planMove } from '../../lib/positions';
-import type { BoardData, ColorName, Property, PropertyType, Task, TaskValue } from '../../lib/types';
+import type { BoardData, ColorName, Property, PropertyType, SavedView, Task, TaskValue } from '../../lib/types';
 import * as api from './api';
 
 export const qk = {
@@ -19,6 +19,24 @@ export function useBoardData(boardId: string | null) {
     queryKey: qk.board(boardId ?? ''),
     queryFn: () => api.getBoardData(boardId as string),
     enabled: boardId !== null,
+  });
+}
+
+export const viewsKey = (boardId: string) => ['views', boardId] as const;
+
+export function useViews(boardId: string) {
+  return useQuery({ queryKey: viewsKey(boardId), queryFn: () => api.listViews(boardId) });
+}
+
+/** Id карточек, подходящих под строку поиска (название и описание). Пока идёт новый поиск, показываем прежний результат. */
+export function useSearchIds(boardId: string, query: string) {
+  const q = query.trim();
+  return useQuery({
+    queryKey: ['search', boardId, q] as const,
+    queryFn: () => api.searchTaskIds(boardId, q),
+    enabled: q !== '',
+    placeholderData: keepPreviousData,
+    staleTime: 5000,
   });
 }
 
@@ -121,13 +139,23 @@ export function useActions() {
     await refresh(boardId);
   }
 
-  /** Сохранение названия с проверкой версии: чужие изменения молча не затираем. Возвращает обновлённую карточку. */
-  async function renameTask(boardId: string, task: Task, title: string): Promise<Task> {
-    try {
-      return await api.updateTask(task.id, { title: title.trim() }, task.version);
-    } finally {
-      await refresh(boardId);
-    }
+  /**
+   * Сохраняет название и/или описание карточки с проверкой версии: чужие изменения молча не затираем
+   * (при расхождении бросает ConflictError). Список доски обновляется без полной перезагрузки.
+   */
+  async function saveTask(
+    boardId: string,
+    taskId: string,
+    patch: { title?: string; description_html?: string },
+    expectedVersion: number,
+  ): Promise<Task> {
+    const saved = await api.saveTask(taskId, patch, expectedVersion);
+    patchCache(boardId, (d) => ({
+      ...d,
+      tasks: d.tasks.map((t) => (t.id === taskId ? { ...t, title: saved.title, version: saved.version } : t)),
+    }));
+    if (patch.description_html !== undefined) void qc.invalidateQueries({ queryKey: ['search', boardId] });
+    return saved;
   }
 
   /** orderedIds: карточки целевой колонки в новом порядке (включая переносимую). */
@@ -282,6 +310,30 @@ export function useActions() {
     patchCache(boardId, (d) => ({ ...d, values: [...d.values.filter((v) => !same(v)), saved] }));
   }
 
+  // ------------------------------------------------------------ представления
+  async function createView(boardId: string, ownerId: string | null, name: string, config: unknown) {
+    const views = qc.getQueryData<SavedView[]>(viewsKey(boardId)) ?? [];
+    const created = await api.createView({
+      board_id: boardId,
+      owner_id: ownerId,
+      name: name.trim(),
+      config,
+      position: keyBetween(lastPosition(views), null),
+    });
+    await qc.invalidateQueries({ queryKey: viewsKey(boardId) });
+    return created;
+  }
+
+  async function updateView(boardId: string, id: string, patch: { name?: string; config?: unknown }) {
+    await api.updateView(id, patch.name === undefined ? patch : { ...patch, name: patch.name.trim() });
+    await qc.invalidateQueries({ queryKey: viewsKey(boardId) });
+  }
+
+  async function deleteView(boardId: string, id: string) {
+    await api.deleteView(id);
+    await qc.invalidateQueries({ queryKey: viewsKey(boardId) });
+  }
+
   return {
     createBoard,
     renameBoard,
@@ -289,7 +341,7 @@ export function useActions() {
     updateColumn,
     moveColumn,
     createTask,
-    renameTask,
+    saveTask,
     moveTask,
     createProperty,
     renameProperty,
@@ -301,5 +353,8 @@ export function useActions() {
     optionUsage,
     deleteOption,
     setTaskValue,
+    createView,
+    updateView,
+    deleteView,
   };
 }

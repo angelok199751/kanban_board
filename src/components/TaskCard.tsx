@@ -14,14 +14,24 @@ export interface CardField {
 }
 
 /** Внешний вид карточки (без перетаскивания): используется и в колонке, и в «призраке» при переносе. */
-export function TaskCardView({ task, fields, className }: { task: Task; fields?: CardField[]; className?: string }) {
+export function TaskCardView({
+  task,
+  fields,
+  compact,
+  className,
+}: {
+  task: Task;
+  fields?: CardField[];
+  compact?: boolean;
+  className?: string;
+}) {
   const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
 
   return (
     <div className={className ? `task ${className}` : 'task'}>
       <span className="task-number">#{task.number}</span>
       <span className="task-title">{task.title}</span>
-      {fields && fields.length > 0 && (
+      {!compact && fields && fields.length > 0 && (
         <div className="task-fields">
           {fields.map((f) => {
             if (f.type === 'select') {
@@ -62,10 +72,12 @@ export function TaskCardView({ task, fields, className }: { task: Task; fields?:
 export function SortableTaskCard({
   task,
   fields,
+  compact,
   onOpen,
 }: {
   task: Task;
   fields: CardField[];
+  compact: boolean;
   onOpen: (task: Task) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -82,7 +94,7 @@ export function SortableTaskCard({
       {...listeners}
       onClick={() => onOpen(task)}
     >
-      <TaskCardView task={task} fields={fields} />
+      <TaskCardView task={task} fields={fields} compact={compact} />
     </div>
   );
 }

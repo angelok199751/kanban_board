@@ -204,3 +204,51 @@ textarea.field { resize: vertical; font: inherit; }
 .save-status.error-text { color: #ffb3bf; }
 input[type="date"].field { color-scheme: dark; }
 select.field { appearance: auto; }
+
+/* ---------- этап 5: представления, поиск, редактор ---------- */
+.dialog { position: relative; max-height: 92vh; overflow-y: auto; }
+.dialog.wide { max-width: 700px; }
+.dialog.full { max-width: none; width: 96vw; height: 94vh; max-height: 94vh; }
+.dialog-corner { position: absolute; top: 12px; right: 12px; }
+
+.view-bar { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 6px 18px 0; border-bottom: 1px solid var(--border); }
+.view-tabs { display: flex; gap: 2px; flex-wrap: wrap; }
+.view-tab-wrap { display: inline-flex; align-items: center; }
+.view-tab { padding: 8px 12px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); }
+.view-tab:hover { color: var(--text); }
+.view-tab.active { color: var(--text); border-bottom-color: var(--accent); }
+.view-tag { margin-left: 6px; padding: 1px 6px; border-radius: 999px; font-size: 10px; color: var(--muted); background: var(--panel2); }
+.view-actions { display: flex; align-items: center; gap: 8px; padding-bottom: 4px; }
+
+.board-toolbar { flex-wrap: wrap; align-items: center; padding-top: 10px; }
+.field.search { width: 280px; padding: 6px 10px; }
+select.field.small { width: auto; padding: 6px 10px; font-size: 12px; }
+.badge { margin-left: 6px; padding: 0 6px; border-radius: 999px; font-size: 11px; font-weight: 700; color: #211b34; background: var(--accent); }
+.btn.pressed { border-color: var(--accent); background: #2f2b4d; }
+.btn.icon { padding: 6px 10px; }
+.btn.danger { color: #ffb3bf; border-color: #6b3441; }
+.btn:disabled { opacity: .5; cursor: default; }
+
+.radio-line, .check-line { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+.check-list { display: flex; flex-direction: column; }
+.filter-list { display: flex; flex-direction: column; gap: 14px; margin-bottom: 12px; }
+.date-range { display: flex; gap: 12px; }
+.date-range .field { width: auto; margin-left: 6px; }
+
+.props-section summary { cursor: pointer; color: var(--muted); margin: 12px 0 2px; }
+.rich { margin-top: 4px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--panel2); }
+.dialog.full .rich { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.rich-toolbar { display: flex; gap: 2px; padding: 6px; border-bottom: 1px solid var(--border); }
+.rich-toolbar button { min-width: 30px; height: 28px; border: 0; border-radius: 6px; color: var(--text); background: transparent; }
+.rich-toolbar button:hover:not(:disabled) { background: rgba(255, 255, 255, .08); }
+.rich-field { min-height: 220px; padding: 12px 14px; outline: none; line-height: 1.55; overflow-wrap: anywhere; }
+.dialog.full .rich-field { flex: 1; overflow-y: auto; }
+.rich-field:empty::before { content: attr(data-placeholder); color: var(--muted); }
+.rich-field a { color: var(--cyan); }
+.rich-field ul, .rich-field ol { padding-left: 22px; margin: 6px 0; }
+.rich-loading { padding: 18px 0; }
+.conflict {
+  margin-top: 12px; padding: 10px 12px; border-radius: 10px;
+  color: #ffe6a8; background: #3a3320; border: 1px solid #6b5a34;
+}
+.conflict .row.end { margin-top: 8px; }
