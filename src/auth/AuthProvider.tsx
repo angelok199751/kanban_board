@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import type { Session } from '@supabase/supabase-js';
 import { supabase, humanizeError } from '../lib/supabase';
 import { LOGIN_DOMAIN } from '../config';
@@ -44,6 +45,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null | undefined>(undefined);
   const [memberState, setMemberState] = useState<MemberState>({ kind: 'idle' });
   const [attempt, setAttempt] = useState(0);
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     supabase.auth
@@ -52,7 +54,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .catch(() => setSession(null));
 
     // Внутри колбэка не обращаемся к базе: загрузка участника — в отдельном эффекте ниже.
-    const { data } = supabase.auth.onAuthStateChange((_event, s) => setSession(s));
+    const { data } = supabase.auth.onAuthStateChange((_event, s) => {
+      setSession(s);
+      // после выхода данные прежнего пользователя не должны оставаться в памяти вкладки
+      if (!s) queryClient.clear();
+    });
     return () => data.subscription.unsubscribe();
   }, []);
 
