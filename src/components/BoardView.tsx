@@ -38,7 +38,6 @@ import { ColumnDialog } from './ColumnDialog';
 import { ColumnView } from './ColumnView';
 import { ConfirmDialog } from './ConfirmDialog';
 import { ExportDialog } from './ExportDialog';
-import { StatsDialog } from './StatsDialog';
 import { FieldsDialog } from './FieldsDialog';
 import { FiltersDialog } from './FiltersDialog';
 import { OptionsDialog } from './OptionsDialog';
@@ -59,7 +58,6 @@ type DialogState =
   | { kind: 'options'; propertyId: string }
   | { kind: 'filters' }
   | { kind: 'export' }
-  | { kind: 'stats' }
   | { kind: 'fields' }
   | { kind: 'saveView' }
   | { kind: 'manageView'; view: SavedView }
@@ -438,9 +436,6 @@ export function BoardView({ board, boards }: { board: Board; boards: Board[] }) 
         <button className="btn small" type="button" title="Экспорт в Excel или CSV" aria-label="Экспорт" onClick={() => setDialog({ kind: 'export' })}>
           ⇩<span className="btn-label"> Экспорт</span>
         </button>
-        <button className="btn small" type="button" title="Статистика доски" aria-label="Статистика" onClick={() => setDialog({ kind: 'stats' })}>
-          📊<span className="btn-label"> Статистика</span>
-        </button>
         <span className="muted small-text counter" title="Карточек на доске (без архива и корзины)">
           {visibleTasks.length === tasks.length
             ? `Карточек: ${tasks.length}`
@@ -583,16 +578,6 @@ export function BoardView({ board, boards }: { board: Board; boards: Board[] }) 
           currentBoardId={board.id}
           config={config}
           search={debouncedSearch}
-          onClose={() => setDialog(null)}
-        />
-      )}
-      {dialog?.kind === 'stats' && query.data && (
-        <StatsDialog
-          boardId={board.id}
-          data={query.data}
-          tasks={tasks}
-          visibleTasks={visibleTasks}
-          filtersActive={filterCount > 0 || searching}
           onClose={() => setDialog(null)}
         />
       )}
