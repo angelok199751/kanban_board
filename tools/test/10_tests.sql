@@ -1,4 +1,4 @@
--- Тесты схемы, триггеров и RLS для миграций 001, 002 и 003.
+-- Тесты схемы, триггеров и RLS для миграций 001-006.
 --
 -- Запуск (локальный PostgreSQL 14+; подробности в tools/test/README.md):
 --   psql -v ON_ERROR_STOP=1 -d qaflow_test -f tools/test/10_tests.sql
@@ -397,6 +397,236 @@ begin
 end $$;
 rollback;
 \echo T9 ok: search_text без тегов и обновляется
+
+-- ===========================================================================
+-- T10. Архив и корзина: функции из миграции 004
+-- ===========================================================================
+begin;
+set local role authenticated;
+select set_config('request.jwt.claim.sub', :'bob', true);
+do $$
+declare
+  b uuid; c uuid; t1 uuid; t2 uuid; t3 uuid;
+begin
+  insert into public.boards (name, position) values ('Доска', 'a0') returning id into b;
+  insert into public.board_columns (board_id, name, position) values (b, 'Колонка', 'a0') returning id into c;
+  insert into public.tasks (board_id, column_id, title, position) values (b, c, 'Одна',  'a0') returning id into t1;
+  insert into public.tasks (board_id, column_id, title, position) values (b, c, 'Две',   'a1') returning id into t2;
+  insert into public.tasks (board_id, column_id, title, position) values (b, c, 'Раньше','a2') returning id into t3;
+  update public.tasks set archived_at = now() - interval '1 day' where id = t3;  -- архивирована отдельно, раньше
+
+  -- архивация колонки забирает активные карточки
+  perform public.archive_column(c);
+  assert (select archived_at is not null from public.board_columns where id = c), 'T10: колонка не в архиве';
+  assert (select count(*) from public.tasks where column_id = c and archived_at is not null) = 3, 'T10: не все карточки ушли в архив';
+
+  -- повторная архивация и несуществующая колонка: понятная ошибка
+  begin
+    perform public.archive_column(c);
+    raise exception 'ТЕСТ ПРОВАЛЕН: повторная архивация прошла';
+  exception when sqlstate 'P0002' then null; end;
+
+  -- восстановление колонки возвращает только тех, кто ушёл вместе с ней
+  perform public.restore_column(c);
+  assert (select archived_at is null from public.board_columns where id = c), 'T10: колонка не вернулась';
+  assert (select archived_at is null from public.tasks where id = t1), 'T10: карточка 1 не вернулась';
+  assert (select archived_at is null from public.tasks where id = t2), 'T10: карточка 2 не вернулась';
+  assert (select archived_at is not null from public.tasks where id = t3), 'T10: раньше архивированная карточка вернулась без просьбы';
+
+  -- восстановление колонки, которая не в архиве
+  begin
+    perform public.restore_column(c);
+    raise exception 'ТЕСТ ПРОВАЛЕН: восстановлена колонка не из архива';
+  exception when sqlstate 'P0002' then null; end;
+
+  -- возврат одной карточки возвращает и её колонку
+  perform public.archive_column(c);
+  perform public.restore_task(t1);
+  assert (select archived_at is null from public.board_columns where id = c), 'T10: колонка не вернулась вместе с карточкой';
+  assert (select archived_at is null from public.tasks where id = t1), 'T10: карточка не вернулась';
+  assert (select archived_at is not null from public.tasks where id = t2), 'T10: соседняя карточка вернулась без просьбы';
+
+  -- корзина: восстановление в активную колонку и в архивную
+  update public.tasks set deleted_at = now() where id = t1;
+  perform public.restore_task_from_trash(t1);
+  assert (select deleted_at is null and archived_at is null from public.tasks where id = t1), 'T10: карточка не вернулась из корзины';
+
+  update public.tasks set deleted_at = now() where id = t1;
+  perform public.archive_column(c);               -- t1 в корзине, колонка уходит в архив
+  perform public.restore_task_from_trash(t1);
+  assert (select deleted_at is null and archived_at is not null from public.tasks where id = t1),
+         'T10: карточка из корзины в архивную колонку должна попасть в архив, а не пропасть невидимой';
+
+  -- не из корзины
+  begin
+    perform public.restore_task_from_trash(t2);
+    raise exception 'ТЕСТ ПРОВАЛЕН: восстановлена карточка не из корзины';
+  exception when sqlstate 'P0002' then null; end;
+end $$;
+rollback;
+
+begin;
+set local role anon;
+do $$
+begin
+  begin
+    perform public.archive_column(gen_random_uuid());
+    raise exception 'ТЕСТ ПРОВАЛЕН: аноним вызвал archive_column';
+  exception when sqlstate '42501' then null; end;
+end $$;
+rollback;
+\echo T10 ok: архив и корзина
+
+-- ===========================================================================
+-- T11. Базы знаний и статьи (миграция 005)
+-- ===========================================================================
+begin;
+set local role authenticated;
+select set_config('request.jwt.claim.sub', :'bob', true);
+do $$
+declare
+  kb uuid; a uuid; n int; v int; s text;
+begin
+  insert into public.knowledge_bases (name, position) values ('Инструкции', 'a0') returning id into kb;
+  insert into public.knowledge_articles (base_id, title, content_html, labels)
+    values (kb, 'Как релизить', '<p>Шаг <b>один</b></p>', array['релиз', 'чек-лист']) returning id, version, search_text into a, v, s;
+
+  assert v = 1, 'T11: версия новой статьи должна быть 1';
+  assert position('<' in s) = 0 and s like '%Шаг%' and s like '%один%', 'T11: search_text без тегов';
+
+  -- версия растёт, неизменяемые поля защищены
+  update public.knowledge_articles set title = 'Как выпускать релиз', base_id = gen_random_uuid() where id = a and version = 1;
+  get diagnostics n = row_count;
+  assert n = 1, 'T11: правка с актуальной версией должна пройти';
+  assert (select version from public.knowledge_articles where id = a) = 2, 'T11: версия должна вырасти';
+  assert (select base_id from public.knowledge_articles where id = a) = kb, 'T11: base_id изменился';
+  update public.knowledge_articles set title = 'Затирание' where id = a and version = 1;
+  get diagnostics n = row_count;
+  assert n = 0, 'T11: правка с устаревшей версией не должна проходить';
+
+  -- не более 20 меток
+  begin
+    update public.knowledge_articles set labels = (select array_agg('м' || g) from generate_series(1, 21) g) where id = a;
+    raise exception 'ТЕСТ ПРОВАЛЕН: принято больше 20 меток';
+  exception when sqlstate '23514' then null; end;
+
+  -- удаление: статью только из корзины, базу только из архива
+  delete from public.knowledge_articles where id = a;
+  get diagnostics n = row_count;
+  assert n = 0, 'T11: статья удалена минуя корзину';
+  delete from public.knowledge_bases where id = kb;
+  get diagnostics n = row_count;
+  assert n = 0, 'T11: база удалена без архивации';
+
+  update public.knowledge_articles set deleted_at = now() where id = a;
+  delete from public.knowledge_articles where id = a;
+  get diagnostics n = row_count;
+  assert n = 1, 'T11: статью из корзины должно быть можно удалить';
+
+  insert into public.knowledge_articles (base_id, title) values (kb, 'Ещё статья');
+  update public.knowledge_bases set archived_at = now() where id = kb;
+  delete from public.knowledge_bases where id = kb;
+  get diagnostics n = row_count;
+  assert n = 1, 'T11: архивную базу должно быть можно удалить';
+  assert (select count(*) from public.knowledge_articles where base_id = kb) = 0, 'T11: статьи удаляются вместе с базой';
+end $$;
+
+-- деактивированный участник ничего не видит и не пишет
+select set_config('request.jwt.claim.sub', :'bob', true);
+insert into public.knowledge_bases (name, position) values ('Для проверки доступа', 'a1');
+select set_config('request.jwt.claim.sub', :'carol', true);
+do $$
+begin
+  assert (select count(*) from public.knowledge_bases) = 0, 'T11: деактивированный видит базы знаний';
+  begin
+    insert into public.knowledge_bases (name, position) values ('взлом', 'a2');
+    raise exception 'ТЕСТ ПРОВАЛЕН: деактивированный создал базу знаний';
+  exception when sqlstate '42501' then null; end;
+end $$;
+rollback;
+
+begin;
+set local role anon;
+do $$
+begin
+  begin
+    perform count(*) from public.knowledge_articles;
+    raise exception 'ТЕСТ ПРОВАЛЕН: аноним прочитал статьи';
+  exception when sqlstate '42501' then null; end;
+end $$;
+rollback;
+\echo T11 ok: базы знаний и статьи
+
+-- ===========================================================================
+-- T12. Окончательное удаление колонок и свойств (миграция 006)
+-- ===========================================================================
+begin;
+set local role authenticated;
+select set_config('request.jwt.claim.sub', :'bob', true);
+do $$
+declare
+  b uuid; c uuid; c2 uuid; t1 uuid; t2 uuid; t3 uuid; p uuid; o uuid; n int;
+begin
+  insert into public.boards (name, position) values ('Доска', 'a0') returning id into b;
+  insert into public.board_columns (board_id, name, position) values (b, 'Удаляемая', 'a0') returning id into c;
+  insert into public.board_columns (board_id, name, position) values (b, 'Остаётся',  'a1') returning id into c2;
+  insert into public.tasks (board_id, column_id, title, position) values (b, c, 'Активная', 'a0') returning id into t1;
+  insert into public.tasks (board_id, column_id, title, position) values (b, c, 'В корзине', 'a1') returning id into t2;
+  insert into public.tasks (board_id, column_id, title, position) values (b, c2, 'В другой колонке', 'a0') returning id into t3;
+  update public.tasks set deleted_at = now() where id = t2;
+
+  -- из активной колонки удалить нельзя
+  begin
+    perform public.delete_column_forever(c);
+    raise exception 'ТЕСТ ПРОВАЛЕН: удалена колонка не из архива';
+  exception when sqlstate 'P0001' then
+    if sqlerrm like 'ТЕСТ ПРОВАЛЕН%' then raise; end if;
+  end;
+  -- несуществующая колонка
+  begin
+    perform public.delete_column_forever(gen_random_uuid());
+    raise exception 'ТЕСТ ПРОВАЛЕН: удалена несуществующая колонка';
+  exception when sqlstate 'P0002' then null; end;
+
+  -- из архива: колонка и все её карточки (активная и из корзины) пропадают, чужие остаются
+  perform public.archive_column(c);
+  n := public.delete_column_forever(c);
+  assert n = 2, 'T12: должно быть удалено 2 карточки, удалено ' || n;
+  assert not exists (select 1 from public.board_columns where id = c), 'T12: колонка осталась';
+  assert not exists (select 1 from public.tasks where id in (t1, t2)), 'T12: карточки колонки остались';
+  assert exists (select 1 from public.tasks where id = t3), 'T12: карточка другой колонки удалена';
+  assert exists (select 1 from public.board_columns where id = c2), 'T12: другая колонка удалена';
+
+  -- свойство: значения и варианты уходят вместе с ним, но только из архива
+  insert into public.properties (board_id, name, type, position) values (b, 'Исполнитель', 'select', 'a0') returning id into p;
+  insert into public.property_options (property_id, label, position) values (p, 'Анна', 'a0') returning id into o;
+  insert into public.task_values (task_id, property_id, option_id) values (t3, p, o);
+
+  delete from public.properties where id = p;
+  get diagnostics n = row_count;
+  assert n = 0, 'T12: свойство удалено без архивации';
+
+  update public.properties set archived_at = now() where id = p;
+  delete from public.properties where id = p;
+  get diagnostics n = row_count;
+  assert n = 1, 'T12: архивное свойство должно удаляться';
+  assert not exists (select 1 from public.task_values where property_id = p), 'T12: значения остались';
+  assert not exists (select 1 from public.property_options where property_id = p), 'T12: варианты остались';
+  assert exists (select 1 from public.tasks where id = t3), 'T12: карточка пострадала при удалении свойства';
+end $$;
+rollback;
+
+begin;
+set local role anon;
+do $$
+begin
+  begin
+    perform public.delete_column_forever(gen_random_uuid());
+    raise exception 'ТЕСТ ПРОВАЛЕН: аноним вызвал delete_column_forever';
+  exception when sqlstate '42501' then null; end;
+end $$;
+rollback;
+\echo T12 ok: окончательное удаление колонок и свойств
 
 \echo ============================================
 \echo ВСЕ ТЕСТЫ ПРОШЛИ

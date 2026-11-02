@@ -6,7 +6,8 @@ import { columnDndId, taskDndId } from '../lib/dndIds';
 import { useNotice } from '../lib/notice';
 import { humanizeError } from '../lib/supabase';
 import type { Column, Task } from '../lib/types';
-import { SortableTaskCard, type CardField } from './TaskCard';
+import type { CardField } from '../lib/cardFields';
+import { SortableTaskCard } from './TaskCard';
 
 function AddTask({ onAdd }: { onAdd: (title: string) => Promise<void> }) {
   const { notify } = useNotice();
@@ -68,6 +69,8 @@ export function ColumnView({
   tasks,
   fieldsOf,
   compact,
+  collapsed,
+  onToggleCollapsed,
   onAddTask,
   onEdit,
   onOpenTask,
@@ -76,6 +79,8 @@ export function ColumnView({
   tasks: Task[];
   fieldsOf: (taskId: string) => CardField[];
   compact: boolean;
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
   onAddTask: (title: string) => Promise<void>;
   onEdit: () => void;
   onOpenTask: (task: Task) => void;
@@ -86,12 +91,23 @@ export function ColumnView({
   const style = { transform: CSS.Transform.toString(transform), transition };
 
   return (
-    <section ref={setNodeRef} style={style} className={isDragging ? 'column dragging' : 'column'}>
+    <section ref={setNodeRef} style={style} className={['column', isDragging ? 'dragging' : '', collapsed ? 'collapsed' : ''].filter(Boolean).join(' ')}>
       {/* Колонку можно тянуть только за заголовок: это меняет порядок колонок, а не статус карточек */}
       <header className="column-head" {...attributes} {...listeners}>
         <span className="dot" style={{ background: COLORS[column.color] }} />
         <h3 title={column.name}>{column.name}</h3>
         <span className="count">{tasks.length}</span>
+        <button
+          className="icon-btn column-toggle"
+          type="button"
+          title={collapsed ? 'Развернуть колонку' : 'Свернуть колонку до заголовка'}
+          aria-label={collapsed ? 'Развернуть колонку' : 'Свернуть колонку'}
+          aria-expanded={!collapsed}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={onToggleCollapsed}
+        >
+          ▾
+        </button>
         <button
           className="icon-btn"
           type="button"

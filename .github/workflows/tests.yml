@@ -1,0 +1,38 @@
+name: Tests
+
+# Проверки не блокируют публикацию на GitHub Pages (она в отдельном файле deploy.yml):
+# красный значок здесь означает «посмотри, что сломалось», а не «сайт не обновился».
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit:
+    name: Unit-тесты и проверка миграций
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install
+      - run: npm test
+
+  e2e:
+    name: Сценарии в браузере (поддельная база)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install
+      - run: npm install
+        working-directory: tools/e2e
+      - run: npx playwright install --with-deps chromium
+        working-directory: tools/e2e
+      - run: npm test
+        working-directory: tools/e2e

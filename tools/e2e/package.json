@@ -1,0 +1,13 @@
+{
+  "name": "qa-flow-e2e",
+  "private": true,
+  "description": "Сценарные проверки интерфейса в браузере на поддельной базе (без Supabase)",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node build.mjs && node smoke.cjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "playwright": "^1.48.0"
+  }
+}

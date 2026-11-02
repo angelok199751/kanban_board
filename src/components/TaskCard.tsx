@@ -1,16 +1,32 @@
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { taskDndId } from '../lib/dndIds';
-import type { PropertyType, Task } from '../lib/types';
+import type { CardField } from '../lib/cardFields';
+import type { Task } from '../lib/types';
 
-/** Готовое к показу значение свойства на карточке. */
-export interface CardField {
-  id: string;
-  name: string;
-  type: PropertyType;
-  text: string;
-  color?: string; // для списка: цвет варианта
-  url?: string; // для ссылки: адрес
+/** Цветная пилюля значения: список и дата цветные, текст серый, ссылка кликабельна. */
+export function Pill({ field }: { field: CardField }) {
+  const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
+  if (field.url) {
+    return (
+      <a
+        className="pill link"
+        href={field.url}
+        target="_blank"
+        rel="noopener noreferrer"
+        title={field.url}
+        onPointerDown={stop}
+        onClick={stop}
+      >
+        {field.text} ↗
+      </a>
+    );
+  }
+  return (
+    <span className={`pill c-${field.tone ?? 'gray'}`} title={field.name}>
+      {field.text}
+    </span>
+  );
 }
 
 /** Внешний вид карточки (без перетаскивания): используется и в колонке, и в «призраке» при переносе. */
@@ -25,47 +41,24 @@ export function TaskCardView({
   compact?: boolean;
   className?: string;
 }) {
-  const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
-
+  const classes = ['task', compact ? 'compact' : '', className ?? ''].filter(Boolean).join(' ');
   return (
-    <div className={className ? `task ${className}` : 'task'}>
-      <span className="task-number">#{task.number}</span>
-      <span className="task-title">{task.title}</span>
+    <article className={classes}>
+      <div className="task-top">
+        <span className="task-id">#{task.number}</span>
+        <span className="task-open" aria-hidden="true">
+          ↗
+        </span>
+      </div>
+      <div className="task-title">{task.title}</div>
       {!compact && fields && fields.length > 0 && (
-        <div className="task-fields">
-          {fields.map((f) => {
-            if (f.type === 'select') {
-              return (
-                <span key={f.id} className="chip" style={{ color: f.color, background: `${f.color}26` }} title={f.name}>
-                  {f.text}
-                </span>
-              );
-            }
-            if (f.type === 'url' && f.url) {
-              return (
-                <a
-                  key={f.id}
-                  className="chip link"
-                  href={f.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  title={f.url}
-                  onPointerDown={stop}
-                  onClick={stop}
-                >
-                  {f.text} ↗
-                </a>
-              );
-            }
-            return (
-              <span key={f.id} className="field-line">
-                <span className="muted">{f.name}:</span> {f.text}
-              </span>
-            );
-          })}
+        <div className="task-meta">
+          {fields.map((f) => (
+            <Pill key={f.id} field={f} />
+          ))}
         </div>
       )}
-    </div>
+    </article>
   );
 }
 

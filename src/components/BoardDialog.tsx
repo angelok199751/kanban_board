@@ -6,6 +6,7 @@ export function BoardDialog({
   submitLabel,
   initialName = '',
   initialDescription = '',
+  withDescription = true,
   onSubmit,
   onClose,
 }: {
@@ -13,6 +14,7 @@ export function BoardDialog({
   submitLabel: string;
   initialName?: string;
   initialDescription?: string;
+  withDescription?: boolean;
   onSubmit: (name: string, description: string) => Promise<void>;
   onClose: () => void;
 }) {
@@ -29,8 +31,12 @@ export function BoardDialog({
     >
       <label className="label" htmlFor="boardName">Название</label>
       <input id="boardName" className="field" maxLength={100} autoFocus value={name} onChange={(e) => setName(e.target.value)} />
-      <label className="label" htmlFor="boardDesc">Описание (необязательно)</label>
-      <textarea id="boardDesc" className="field" rows={3} maxLength={500} value={description} onChange={(e) => setDescription(e.target.value)} />
+      {withDescription && (
+        <>
+          <label className="label" htmlFor="boardDesc">Описание (необязательно)</label>
+          <textarea id="boardDesc" className="field" rows={3} maxLength={500} value={description} onChange={(e) => setDescription(e.target.value)} />
+        </>
+      )}
     </FormDialog>
   );
 }

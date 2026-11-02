@@ -10,3 +10,9 @@ data/
 backup/
 tools/import/out/
 *.seed.sql
+
+# Резервные копии рабочих данных: репозиторий публичный, их нельзя коммитить
+backups/
+
+tools/e2e/dist
+tools/e2e/node_modules

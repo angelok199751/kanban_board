@@ -10,12 +10,18 @@ export function Dialog({
   onClose,
   wide,
   full,
+  editor,
+  extraClass,
   children,
 }: {
   title: string;
   onClose: () => void;
   wide?: boolean;
   full?: boolean;
+  /** Окно редактора (карточка, статья): своя шапка и подвал, без стандартного заголовка. */
+  editor?: boolean;
+  /** Дополнительный класс окна (для особых размеров). */
+  extraClass?: string;
   children: ReactNode;
 }) {
   const idRef = useRef(0);
@@ -40,8 +46,13 @@ export function Dialog({
 
   return (
     <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className={full ? 'card dialog full' : wide ? 'card dialog wide' : 'card dialog'} role="dialog" aria-modal="true" aria-label={title}>
-        <h2>{title}</h2>
+      <div
+        className={[editor ? (full ? 'dialog editor full' : 'dialog editor') : wide ? 'card dialog wide' : 'card dialog', extraClass ?? ''].filter(Boolean).join(' ')}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+      >
+        {!editor && <h2>{title}</h2>}
         {children}
       </div>
     </div>

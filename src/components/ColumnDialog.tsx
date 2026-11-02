@@ -9,6 +9,7 @@ export function ColumnDialog({
   initialName = '',
   initialColor = 'gray',
   onSubmit,
+  onArchive,
   onClose,
 }: {
   title: string;
@@ -16,6 +17,7 @@ export function ColumnDialog({
   initialName?: string;
   initialColor?: ColorName;
   onSubmit: (name: string, color: ColorName) => Promise<void>;
+  onArchive?: () => void;
   onClose: () => void;
 }) {
   const [name, setName] = useState(initialName);
@@ -46,6 +48,11 @@ export function ColumnDialog({
           />
         ))}
       </div>
+      {onArchive && (
+        <button type="button" className="btn danger archive-btn" onClick={onArchive}>
+          Убрать колонку в архив…
+        </button>
+      )}
     </FormDialog>
   );
 }

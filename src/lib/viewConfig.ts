@@ -1,4 +1,12 @@
-import type { Property, PropertyOption, Task, TaskValue } from './types';
+import type { Property, PropertyOption, TaskValue } from './types';
+
+/** Минимум, который нужен для фильтров и сортировки: подходит и карточка доски, и карточка экспорта. */
+export interface SortableTask {
+  id: string;
+  number: number;
+  title: string;
+  position: string;
+}
 
 /** Условие фильтра по одному свойству. Какие поля используются, зависит от типа свойства. */
 export interface PropFilter {
@@ -96,7 +104,7 @@ export interface ViewContext {
 }
 
 /** Все фильтры должны выполняться одновременно. Фильтры по удалённым или архивным свойствам не действуют. */
-export function matchesFilters(task: Task, filters: Record<string, PropFilter>, ctx: ViewContext): boolean {
+export function matchesFilters(task: { id: string }, filters: Record<string, PropFilter>, ctx: ViewContext): boolean {
   for (const [propertyId, f] of Object.entries(filters)) {
     const property = ctx.properties.get(propertyId);
     if (!property || !isFilterActive(f)) continue;
@@ -122,10 +130,10 @@ export function matchesFilters(task: Task, filters: Record<string, PropFilter>, 
 }
 
 const cmpStr = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
-const byPosition = (a: Task, b: Task) => cmpStr(a.position, b.position) || cmpStr(a.id, b.id);
+const byPosition = (a: SortableTask, b: SortableTask) => cmpStr(a.position, b.position) || cmpStr(a.id, b.id);
 
 /** Сортировка карточек. «Вручную» это порядок по position. Пустые значения всегда в конце. */
-export function sortTasks(tasks: Task[], sort: SortSpec, ctx: ViewContext): Task[] {
+export function sortTasks<T extends SortableTask>(tasks: T[], sort: SortSpec, ctx: ViewContext): T[] {
   const list = [...tasks];
   if (sort.key === 'manual') return list.sort(byPosition);
 
@@ -142,7 +150,7 @@ export function sortTasks(tasks: Task[], sort: SortSpec, ctx: ViewContext): Task
   const property = ctx.properties.get(sort.key);
   if (!property) return list.sort(byPosition); // свойство удалено: возвращаемся к ручному порядку
 
-  const keyOf = (t: Task): string | null => {
+  const keyOf = (t: T): string | null => {
     const v = ctx.valuesOf(t.id)?.get(property.id);
     if (!v) return null;
     if (property.type === 'select') return v.option_id ? (ctx.options.get(v.option_id)?.position ?? null) : null;

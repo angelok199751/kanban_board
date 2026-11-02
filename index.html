@@ -4,6 +4,35 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>QA Flow</title>
+    <script>
+      // Тема применяется до отрисовки, чтобы страница не мигала. Ключи те же, что у старой версии QA Flow.
+      (function () {
+        try {
+          var mode = localStorage.getItem('qaflow.themeMode');
+          if (mode !== 'light' && mode !== 'system' && mode !== 'custom') mode = 'dark';
+          var root = document.documentElement;
+          var resolved = mode;
+          if (mode === 'custom') {
+            // готовые цвета пользовательской темы, сохранённые при её последнем применении
+            var saved = JSON.parse(localStorage.getItem('qaflow.themeVars') || 'null');
+            if (saved && saved.vars) {
+              resolved = saved.resolved === 'light' ? 'light' : 'dark';
+              Object.keys(saved.vars).forEach(function (key) { root.style.setProperty(key, saved.vars[key]); });
+            } else {
+              mode = 'dark';
+              resolved = 'dark';
+            }
+          } else if (mode === 'system') {
+            resolved = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+          }
+          root.dataset.theme = mode;
+          root.dataset.resolvedTheme = resolved;
+          root.style.colorScheme = resolved;
+        } catch (e) {
+          /* тема по умолчанию */
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -56,6 +56,7 @@ export interface TaskValue {
   value_text: string | null;
   value_date: string | null; // 'YYYY-MM-DD', без часового пояса
   option_id: string | null;
+  updated_at: string; // версия значения: по ней проверяем, что его не изменили до нас
 }
 
 export interface BoardData {
@@ -81,5 +82,47 @@ export interface TaskFull {
   id: string;
   title: string;
   description_html: string;
+  version: number;
+}
+
+/** Карточка для экспорта: с описанием и признаками архива и корзины. */
+export interface ExportTask {
+  id: string;
+  column_id: string;
+  number: number;
+  title: string;
+  description_html: string;
+  position: string;
+  archived_at: string | null;
+  deleted_at: string | null;
+}
+
+// ---------------------------------------------------------------- базы знаний
+
+export interface KnowledgeBase {
+  id: string;
+  name: string;
+  position: string;
+  archived_at: string | null;
+}
+
+/** Статья в списке: без HTML, но с текстом для поиска и отрывка. */
+export interface KnowledgeArticle {
+  id: string;
+  base_id: string;
+  title: string;
+  labels: string[];
+  version: number;
+  updated_at: string;
+  deleted_at: string | null;
+  search_text: string;
+}
+
+/** Полная статья для окна редактирования. */
+export interface ArticleFull {
+  id: string;
+  title: string;
+  labels: string[];
+  content_html: string;
   version: number;
 }

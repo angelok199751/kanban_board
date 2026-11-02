@@ -1,6 +1,6 @@
 # SQL-тесты схемы и RLS
 
-Проверяют миграции `supabase/migrations/001_members.sql`, `002_kanban_core.sql` и `003_search.sql`: доступ анонима и деактивированных участников, нумерацию и версии задач, защиту от потери данных (архив, корзина, внешние ключи), проверку значений свойств, представления, права на управление участниками.
+Проверяют миграции `supabase/migrations/001_members.sql`, `002_kanban_core.sql`, `003_search.sql`, `004_archive.sql`, `005_knowledge.sql` и `006_delete_forever.sql`: доступ анонима и деактивированных участников, нумерацию и версии задач, защиту от потери данных (архив, корзина, внешние ключи), проверку значений свойств, представления, права на управление участниками.
 
 Тесты используют вымышленные данные и **выполняются только на локальной базе**. `00_mock_supabase.sql` имитирует роли и схему `auth` Supabase и на настоящем проекте не запускается.
 
@@ -12,6 +12,9 @@ psql -v ON_ERROR_STOP=1 -d qaflow_test -f tools/test/00_mock_supabase.sql
 psql -v ON_ERROR_STOP=1 -d qaflow_test -f supabase/migrations/001_members.sql
 psql -v ON_ERROR_STOP=1 -d qaflow_test -f supabase/migrations/002_kanban_core.sql
 psql -v ON_ERROR_STOP=1 -d qaflow_test -f supabase/migrations/003_search.sql
+psql -v ON_ERROR_STOP=1 -d qaflow_test -f supabase/migrations/004_archive.sql
+psql -v ON_ERROR_STOP=1 -d qaflow_test -f supabase/migrations/005_knowledge.sql
+psql -v ON_ERROR_STOP=1 -d qaflow_test -f supabase/migrations/006_delete_forever.sql
 psql -v ON_ERROR_STOP=1 -d qaflow_test -f tools/test/10_tests.sql
 ```
 

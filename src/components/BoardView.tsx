@@ -23,9 +23,10 @@ import {
 import { useAuth } from '../auth/AuthProvider';
 import { useActions, useBoardData, useSearchIds, useViews } from '../features/boards/hooks';
 import { useViewState } from '../features/boards/useViewState';
-import { COLORS } from '../lib/colors';
 import { columnDndId, isColumnDndId, isTaskDndId, rawId } from '../lib/dndIds';
-import { formatDate, hostOf, isValidUrl } from '../lib/format';
+import { buildCardFields, type CardField } from '../lib/cardFields';
+import { plural } from '../lib/format';
+import { readIdSet, writeIdSet } from '../lib/useStored';
 import { useNotice } from '../lib/notice';
 import { mergeIntoFull } from '../lib/order';
 import { compareByPosition } from '../lib/positions';
@@ -35,11 +36,14 @@ import { useDebounced } from '../lib/useDebounced';
 import { countActiveFilters, isShownOnCard, matchesFilters, sortTasks, type ViewContext } from '../lib/viewConfig';
 import { ColumnDialog } from './ColumnDialog';
 import { ColumnView } from './ColumnView';
+import { ConfirmDialog } from './ConfirmDialog';
+import { ExportDialog } from './ExportDialog';
+import { StatsDialog } from './StatsDialog';
 import { FieldsDialog } from './FieldsDialog';
 import { FiltersDialog } from './FiltersDialog';
 import { OptionsDialog } from './OptionsDialog';
 import { PropertiesDialog } from './PropertiesDialog';
-import { TaskCardView, type CardField } from './TaskCard';
+import { TaskCardView } from './TaskCard';
 import { TaskDialog } from './TaskDialog';
 import { ManageViewDialog, SaveViewDialog } from './ViewDialog';
 import { ViewBar } from './ViewBar';
@@ -49,10 +53,13 @@ type Order = Record<string, string[]>; // id колонки -> id карточе
 type DialogState =
   | { kind: 'newColumn' }
   | { kind: 'editColumn'; column: Column }
+  | { kind: 'archiveColumn'; column: Column }
   | { kind: 'task'; task: Task }
   | { kind: 'properties' }
   | { kind: 'options'; propertyId: string }
   | { kind: 'filters' }
+  | { kind: 'export' }
+  | { kind: 'stats' }
   | { kind: 'fields' }
   | { kind: 'saveView' }
   | { kind: 'manageView'; view: SavedView }
@@ -91,7 +98,7 @@ const collisionDetection: CollisionDetection = (args) => {
   return columnHit ? [columnHit] : [];
 };
 
-export function BoardView({ board }: { board: Board }) {
+export function BoardView({ board, boards }: { board: Board; boards: Board[] }) {
   const query = useBoardData(board.id);
   const viewsQuery = useViews(board.id);
   const actions = useActions();
@@ -191,33 +198,22 @@ export function BoardView({ board }: { board: Board }) {
     (order[columnId] ?? []).map((id) => taskById.get(id)).filter((t): t is Task => t !== undefined);
 
   /** Значения, которые показываются на карточке: только непустые и только у свойств, включённых в этом представлении. */
-  const fieldsOf = (taskId: string): CardField[] => {
-    const values = valuesByTask.get(taskId);
-    if (!values) return [];
-    const out: CardField[] = [];
-    for (const p of activeProperties) {
-      if (!isShownOnCard(p, config)) continue;
-      const v = values.get(p.id);
-      if (!v) continue;
-      const base = { id: p.id, name: p.name, type: p.type };
-      if (p.type === 'select') {
-        const option = v.option_id ? optionById.get(v.option_id) : undefined;
-        if (option) out.push({ ...base, text: option.label, color: COLORS[option.color] });
-      } else if (p.type === 'date') {
-        if (v.value_date) out.push({ ...base, text: formatDate(v.value_date) });
-      } else if (p.type === 'url') {
-        if (v.value_text) {
-          out.push(
-            isValidUrl(v.value_text)
-              ? { ...base, text: hostOf(v.value_text), url: v.value_text }
-              : { ...base, text: v.value_text },
-          );
-        }
-      } else if (v.value_text) {
-        out.push({ ...base, text: v.value_text });
-      }
-    }
-    return out;
+  const fieldsOf = (taskId: string): CardField[] =>
+    buildCardFields(
+      activeProperties.filter((p) => isShownOnCard(p, config)),
+      valuesByTask.get(taskId),
+      optionById,
+    );
+
+  // свёрнутые столбцы: личная настройка этого браузера, отдельно для каждой доски
+  const collapsedKey = `qaflow.collapsed.${board.id}`;
+  const [collapsedColumns, setCollapsedColumns] = useState<Set<string>>(() => readIdSet(collapsedKey));
+  const toggleCollapsed = (columnId: string) => {
+    const next = new Set(collapsedColumns);
+    if (next.has(columnId)) next.delete(columnId);
+    else next.add(columnId);
+    setCollapsedColumns(next);
+    writeIdSet(collapsedKey, next);
   };
 
   const optionsProperty: Property | null =
@@ -377,6 +373,7 @@ export function BoardView({ board }: { board: Board }) {
 
   return (
     <>
+      <div className="board-head">
       <ViewBar
         views={views}
         activeId={view.activeId}
@@ -392,7 +389,7 @@ export function BoardView({ board }: { board: Board }) {
         <input
           className="field search"
           type="search"
-          placeholder="Поиск по названию, номеру и описанию…"
+          placeholder="Поиск по карточкам…"
           aria-label="Поиск по карточкам"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -426,19 +423,33 @@ export function BoardView({ board }: { board: Board }) {
           className={config.compact ? 'btn small pressed' : 'btn small'}
           type="button"
           aria-pressed={config.compact}
+          title="Компактный вид: на карточках только название"
+          aria-label="Компактный вид"
           onClick={() => view.update({ compact: !config.compact })}
         >
-          ▤ Компактно
+          ▤<span className="btn-label"> Компактно</span>
         </button>
-        <button className="btn small" type="button" onClick={() => setDialog({ kind: 'fields' })}>
+        <button className="btn small" type="button" title="Какие свойства показывать на карточках" onClick={() => setDialog({ kind: 'fields' })}>
           Поля
         </button>
-        <button className="btn small" type="button" onClick={() => setDialog({ kind: 'properties' })}>
-          ⚙ Свойства
+        <button className="btn small" type="button" title="Свойства карточек" aria-label="Свойства карточек" onClick={() => setDialog({ kind: 'properties' })}>
+          ⚙<span className="btn-label"> Свойства</span>
         </button>
+        <button className="btn small" type="button" title="Экспорт в Excel или CSV" aria-label="Экспорт" onClick={() => setDialog({ kind: 'export' })}>
+          ⇩<span className="btn-label"> Экспорт</span>
+        </button>
+        <button className="btn small" type="button" title="Статистика доски" aria-label="Статистика" onClick={() => setDialog({ kind: 'stats' })}>
+          📊<span className="btn-label"> Статистика</span>
+        </button>
+        <span className="muted small-text counter" title="Карточек на доске (без архива и корзины)">
+          {visibleTasks.length === tasks.length
+            ? `Карточек: ${tasks.length}`
+            : `Показано ${visibleTasks.length} из ${tasks.length}`}
+        </span>
         {searching && searchQuery.isError && (
           <span className="error-inline small-text">Поиск не сработал: {errText(searchQuery.error)}</span>
         )}
+      </div>
       </div>
 
       <DndContext
@@ -459,6 +470,8 @@ export function BoardView({ board }: { board: Board }) {
                   tasks={tasksOf(c.id)}
                   fieldsOf={fieldsOf}
                   compact={config.compact}
+                  collapsed={collapsedColumns.has(c.id)}
+                  onToggleCollapsed={() => toggleCollapsed(c.id)}
                   onAddTask={(title) => actions.createTask(board.id, c.id, title)}
                   onEdit={() => setDialog({ kind: 'editColumn', column: c })}
                   onOpenTask={(task) => setDialog({ kind: 'task', task })}
@@ -502,8 +515,21 @@ export function BoardView({ board }: { board: Board }) {
           initialName={dialog.column.name}
           initialColor={dialog.column.color}
           onSubmit={(name, color) => actions.updateColumn(board.id, dialog.column.id, name, color)}
+          onArchive={() => setDialog({ kind: 'archiveColumn', column: dialog.column })}
           onClose={() => setDialog(null)}
         />
+      )}
+      {dialog?.kind === 'archiveColumn' && (
+        <ConfirmDialog
+          title="Убрать колонку в архив?"
+          confirmLabel="Убрать в архив"
+          onConfirm={() => actions.archiveColumn(dialog.column.id)}
+          onClose={() => setDialog(null)}
+        >
+          Колонка «{dialog.column.name}» уйдёт в архив вместе со своими карточками (сейчас на доске в ней{' '}
+          {(fullOrder[dialog.column.id] ?? []).length} {plural((fullOrder[dialog.column.id] ?? []).length, 'карточка', 'карточки', 'карточек')}).
+          Ничего не удаляется: колонку и эти карточки можно вернуть в разделе «Архив и корзина».
+        </ConfirmDialog>
       )}
       {dialog?.kind === 'task' && (
         <TaskDialog
@@ -520,6 +546,8 @@ export function BoardView({ board }: { board: Board }) {
         <PropertiesDialog
           boardId={board.id}
           properties={properties}
+          options={options}
+          values={query.data?.values ?? []}
           onOptions={(p) => setDialog({ kind: 'options', propertyId: p.id })}
           onClose={() => setDialog(null)}
         />
@@ -546,6 +574,25 @@ export function BoardView({ board }: { board: Board }) {
           properties={activeProperties}
           config={config}
           onChange={(cardProps) => view.update({ cardProps })}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog?.kind === 'export' && (
+        <ExportDialog
+          boards={boards}
+          currentBoardId={board.id}
+          config={config}
+          search={debouncedSearch}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog?.kind === 'stats' && query.data && (
+        <StatsDialog
+          boardId={board.id}
+          data={query.data}
+          tasks={tasks}
+          visibleTasks={visibleTasks}
+          filtersActive={filterCount > 0 || searching}
           onClose={() => setDialog(null)}
         />
       )}

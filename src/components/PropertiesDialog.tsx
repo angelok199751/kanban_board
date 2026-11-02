@@ -21,9 +21,11 @@ import { PROPERTY_TYPE_LABELS } from '../lib/format';
 import { useNotice } from '../lib/notice';
 import { compareByPosition } from '../lib/positions';
 import { humanizeError } from '../lib/supabase';
-import type { Property, PropertyType } from '../lib/types';
-import { ConfirmDialog } from './ConfirmDialog';
+import { plural } from '../lib/format';
+import type { Property, PropertyOption, PropertyType, TaskValue } from '../lib/types';
+import { ConfirmDialog, DangerConfirmDialog } from './ConfirmDialog';
 import { Dialog } from './Dialog';
+import { IconArchive } from './Icons';
 
 const errText = (e: unknown) => humanizeError(e instanceof Error ? e.message : String(e));
 const TYPES: PropertyType[] = ['select', 'text', 'url', 'date'];
@@ -61,10 +63,12 @@ function PropertyRow({
         }}
       />
       <span className="type-badge">{PROPERTY_TYPE_LABELS[property.type]}</span>
-      {property.type === 'select' && (
+      {property.type === 'select' ? (
         <button className="btn small" type="button" onClick={onOptions}>
           Варианты
         </button>
+      ) : (
+        <span aria-hidden="true" />
       )}
       <button
         type="button"
@@ -76,7 +80,7 @@ function PropertyRow({
         {property.hidden ? '🚫' : '👁'}
       </button>
       <button type="button" className="icon-btn" title="Убрать в архив" aria-label="Убрать в архив" onClick={onArchive}>
-        🗄
+        <IconArchive />
       </button>
     </div>
   );
@@ -85,17 +89,22 @@ function PropertyRow({
 export function PropertiesDialog({
   boardId,
   properties,
+  options,
+  values,
   onOptions,
   onClose,
 }: {
   boardId: string;
   properties: Property[];
+  options: PropertyOption[];
+  values: TaskValue[];
   onOptions: (property: Property) => void;
   onClose: () => void;
 }) {
   const actions = useActions();
   const { notify } = useNotice();
   const [toArchive, setToArchive] = useState<Property | null>(null);
+  const [toDelete, setToDelete] = useState<Property | null>(null);
   const [newName, setNewName] = useState('');
   const [newType, setNewType] = useState<PropertyType>('select');
   const [adding, setAdding] = useState(false);
@@ -202,7 +211,7 @@ export function PropertiesDialog({
           <details className="archived">
             <summary>Архив свойств ({archived.length})</summary>
             {archived.map((p) => (
-              <div key={p.id} className="prop-row">
+              <div key={p.id} className="prop-row archived">
                 <span className="archived-name">{p.name}</span>
                 <span className="type-badge">{PROPERTY_TYPE_LABELS[p.type]}</span>
                 <button
@@ -211,6 +220,9 @@ export function PropertiesDialog({
                   onClick={() => void attempt(() => actions.setPropertyArchived(boardId, p.id, false), 'Не удалось вернуть свойство')}
                 >
                   Вернуть
+                </button>
+                <button className="btn small danger" type="button" onClick={() => setToDelete(p)}>
+                  Удалить навсегда
                 </button>
               </div>
             ))}
@@ -224,6 +236,28 @@ export function PropertiesDialog({
         </div>
       </Dialog>
 
+      {toDelete && (
+        <DangerConfirmDialog
+          title="Удалить свойство навсегда?"
+          confirmLabel="Удалить свойство и значения"
+          phrase={toDelete.name}
+          onConfirm={() => actions.deletePropertyForever(boardId, toDelete.id)}
+          onClose={() => setToDelete(null)}
+        >
+          {(() => {
+            const filled = values.filter((v) => v.property_id === toDelete.id).length;
+            const variants = options.filter((o) => o.property_id === toDelete.id).length;
+            return (
+              <>
+                Свойство «{toDelete.name}» будет удалено вместе со всеми значениями: {filled}{' '}
+                {plural(filled, 'заполненное значение', 'заполненных значения', 'заполненных значений')} в карточках
+                {toDelete.type === 'select' ? ` и ${variants} ${plural(variants, 'вариант', 'варианта', 'вариантов')} списка` : ''}{' '}
+                (включая архивные карточки и корзину). Сами карточки останутся. Восстановить удалённое будет невозможно.
+              </>
+            );
+          })()}
+        </DangerConfirmDialog>
+      )}
       {toArchive && (
         <ConfirmDialog
           title="Убрать свойство в архив?"

@@ -1,10 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import * as api from '../features/boards/api';
 import { useActions } from '../features/boards/hooks';
+import { buildCardFields } from '../lib/cardFields';
 import { isHtmlEmpty, sanitizeHtml } from '../lib/sanitize';
 import { humanizeError } from '../lib/supabase';
+import { useStored } from '../lib/useStored';
 import type { Property, PropertyOption, Task, TaskFull, TaskValue } from '../lib/types';
+import { ConfirmDialog } from './ConfirmDialog';
 import { Dialog } from './Dialog';
+import { LayoutSwitch, parseLayout } from './LayoutSwitch';
+import { Pill } from './TaskCard';
 import { PropertyField } from './PropertyField';
 import { RichTextEditor } from './RichTextEditor';
 
@@ -46,6 +51,11 @@ export function TaskDialog({
   const [conflict, setConflict] = useState<TaskFull | null>(null);
   const [closeBlocked, setCloseBlocked] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
+  const [confirmTrash, setConfirmTrash] = useState(false);
+  // раскладка окна и сворачивание свойств: личная настройка этого браузера, одна для всех карточек
+  const [layout, setLayout] = useStored('qaflow.cardLayout', 'top', parseLayout);
+  const [propsCollapsed, setPropsCollapsed] = useStored('qaflow.cardPropsCollapsed', false, (raw) => raw === 'true');
+  const [actionError, setActionError] = useState<string | null>(null);
 
   // значения, известные серверу на момент последнего успешного сохранения или загрузки
   const version = useRef(task.version);
@@ -216,6 +226,29 @@ export function TaskDialog({
     await flushDescription();
   }
 
+  // ------------------------------------------------------------ архив и корзина
+  /** Сначала сохраняем введённое: карточку не уносим в архив или корзину с несохранёнными правками. */
+  async function leaveWith(action: () => Promise<void>) {
+    const titleOk = await saveTitle();
+    const descOk = await flushDescription();
+    await Promise.allSettled([...pending.current]);
+    if (!titleOk || !descOk || failed.current.size > 0) {
+      setCloseBlocked(true);
+      throw new Error('Есть несохранённые изменения. Исправь ошибку выше или закрой окно без сохранения.');
+    }
+    await action();
+    onClose();
+  }
+
+  async function archiveNow() {
+    setActionError(null);
+    try {
+      await leaveWith(() => actions.archiveTask(task.id));
+    } catch (e) {
+      setActionError(errText(e));
+    }
+  }
+
   // ------------------------------------------------------------ закрытие
   async function requestClose() {
     const titleOk = await saveTitle();
@@ -231,95 +264,166 @@ export function TaskDialog({
   const valueOf = (propertyId: string) => values.find((v) => v.property_id === propertyId);
   const ready = load.kind === 'ready';
 
+  // сводка заполненных свойств: видна в свёрнутой области, чтобы не разворачивать её ради беглого взгляда
+  const optionById = new Map(options.map((o) => [o.id, o] as const));
+  const summary = buildCardFields(properties, new Map(values.map((v) => [v.property_id, v] as const)), optionById);
+
+  const statusClass = status.kind === 'saving' ? 'save-status saving' : status.kind === 'error' ? 'save-status error' : 'save-status';
+
   return (
-    <Dialog title={`Карточка #${task.number}`} wide={!fullscreen} full={fullscreen} onClose={() => void requestClose()}>
-      <button
-        type="button"
-        className="icon-btn dialog-corner"
-        title={fullscreen ? 'Обычный размер' : 'Развернуть на весь экран'}
-        aria-label={fullscreen ? 'Обычный размер' : 'Развернуть на весь экран'}
-        onClick={() => setFullscreen((f) => !f)}
-      >
-        {fullscreen ? '⤡' : '⤢'}
-      </button>
-
-      <label className="label" htmlFor="taskTitle">Название</label>
-      <input
-        id="taskTitle"
-        className="field"
-        maxLength={300}
-        autoFocus
-        value={title}
-        disabled={!ready}
-        onChange={(e) => setTitle(e.target.value)}
-        onBlur={() => void saveTitle()}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') e.currentTarget.blur();
-        }}
-      />
-
-      {properties.length > 0 && (
-        <details className="props-section" open>
-          <summary>Свойства</summary>
-          <div className="fields-grid">
-            {properties.map((p) => (
-              <div key={p.id} className="field-block">
-                <div className="label">{p.name}</div>
-                <PropertyField
-                  property={p}
-                  options={options}
-                  value={valueOf(p.id)}
-                  onSave={(raw) => track(`p:${p.id}`, actions.setTaskValue(boardId, task.id, p, raw))}
-                />
-              </div>
-            ))}
-          </div>
-        </details>
-      )}
-
-      <div className="label">Описание</div>
-      {load.kind === 'loading' && <div className="muted rich-loading">Загружаем карточку…</div>}
-      {load.kind === 'error' && <div className="error">{load.message}</div>}
-      {ready && (
-        <RichTextEditor
-          key={editorKey}
-          html={editorHtml}
-          onChange={onDescriptionChange}
-          onBlur={() => void flushDescription()}
+    <Dialog title={`Карточка #${task.number}`} editor full={fullscreen} onClose={() => void requestClose()}>
+      <header className="editor-header">
+        <span className="editor-id">#{task.number}</span>
+        <input
+          id="taskTitle"
+          className="title-field"
+          placeholder="Название карточки…"
+          maxLength={300}
+          autoFocus
+          value={title}
+          disabled={!ready}
+          onChange={(e) => setTitle(e.target.value)}
+          onBlur={() => void saveTitle()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') e.currentTarget.blur();
+          }}
         />
-      )}
+        <div className="header-tools">
+          <LayoutSwitch value={layout} onChange={setLayout} />
+          <button
+            type="button"
+            className="icon-btn"
+            title={fullscreen ? 'Обычный размер' : 'Развернуть на весь экран'}
+            aria-label={fullscreen ? 'Обычный размер' : 'Развернуть на весь экран'}
+            onClick={() => setFullscreen((f) => !f)}
+          >
+            {fullscreen ? '⤡' : '⤢'}
+          </button>
+          <button type="button" className="icon-btn" title="Закрыть" aria-label="Закрыть" onClick={() => void requestClose()}>
+            ✕
+          </button>
+        </div>
+      </header>
 
-      {conflict && (
-        <div className="conflict" role="alert">
-          <strong>Карточку уже изменил кто-то другой.</strong> То, что ты написала, осталось на экране и пока не сохранено.
-          <div className="row end">
-            <button className="btn small" type="button" onClick={loadFresh}>
-              Загрузить свежую версию
-            </button>
-            <button className="btn small primary" type="button" onClick={() => void overwriteWithMine()}>
-              Перезаписать моими изменениями
-            </button>
+      <div className={`editor-body layout-${layout}${propsCollapsed ? ' props-collapsed' : ''}`}>
+        <section className="props-pane" aria-label="Свойства">
+          <button
+            type="button"
+            className="props-toggle"
+            aria-expanded={!propsCollapsed}
+            title={propsCollapsed ? 'Развернуть свойства' : 'Свернуть свойства'}
+            onClick={() => setPropsCollapsed(!propsCollapsed)}
+          >
+            <span className="props-chevron" aria-hidden="true">
+              ▾
+            </span>
+            <span className="props-title">Свойства</span>
+            <span className="props-summary">
+              {summary.map((f) => (
+                <Pill key={f.id} field={f} />
+              ))}
+            </span>
+          </button>
+          <div className="props-body">
+            <div className="props-scroll">
+              {properties.length > 0 ? (
+                <div className="property-grid">
+                  {properties.map((p) => (
+                    <div key={p.id} className="property">
+                      <label>{p.name}</label>
+                      <div className="property-control">
+                        <PropertyField
+                          property={p}
+                          options={options}
+                          value={valueOf(p.id)}
+                          // сохранения идут по очереди: следующее использует версию значения, которую оставило предыдущее
+                          onSave={(raw, force) =>
+                            track(`p:${p.id}`, enqueue(() => actions.setTaskValue(boardId, task.id, p, raw, force)))
+                          }
+                          onDiscard={() => {
+                            failed.current.delete(`p:${p.id}`);
+                            refreshStatus();
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="muted props-empty">Свойств пока нет. Их можно добавить кнопкой «⚙» над доской.</p>
+              )}
+            </div>
           </div>
+        </section>
+
+        <section className="text-pane" aria-label="Описание">
+          <div className="text-head">
+            <span>Описание</span>
+            <span className="text-hint">Подробности, шаги воспроизведения, ссылки</span>
+          </div>
+          {load.kind === 'loading' && <div className="muted rich-loading">Загружаем карточку…</div>}
+          {load.kind === 'error' && <div className="error">{load.message}</div>}
+          {ready && (
+            <RichTextEditor key={editorKey} html={editorHtml} onChange={onDescriptionChange} onBlur={() => void flushDescription()} />
+          )}
+          {conflict && (
+            <div className="conflict" role="alert">
+              <strong>Карточку уже изменил кто-то другой.</strong> То, что ты написала, осталось на экране и пока не сохранено.
+              <div className="row end">
+                <button className="btn small" type="button" onClick={loadFresh}>
+                  Загрузить свежую версию
+                </button>
+                <button className="btn small primary" type="button" onClick={() => void overwriteWithMine()}>
+                  Перезаписать моими изменениями
+                </button>
+              </div>
+            </div>
+          )}
+        </section>
+      </div>
+
+      {actionError && (
+        <div className="error editor-extra" role="alert">
+          {actionError}
         </div>
       )}
 
-      <div className={status.kind === 'error' ? 'save-status error-text' : 'save-status'} role="status">
-        {status.kind === 'idle' && 'Изменения сохраняются автоматически'}
-        {status.kind === 'saving' && 'Сохраняем…'}
-        {status.kind === 'saved' && 'Все изменения сохранены'}
-        {status.kind === 'error' && `Не сохранено: ${status.message}`}
-      </div>
-
-      <div className="row end">
-        {closeBlocked && (
-          <button className="btn" type="button" onClick={onClose}>
-            Закрыть без сохранения
+      <footer className="editor-footer">
+        <div className={statusClass} role="status">
+          {status.kind === 'idle' && 'Изменения сохраняются автоматически'}
+          {status.kind === 'saving' && 'Сохраняем…'}
+          {status.kind === 'saved' && 'Все изменения сохранены'}
+          {status.kind === 'error' && `Не сохранено: ${status.message}`}
+        </div>
+        <div className="row">
+          <button className="btn small" type="button" disabled={!ready} onClick={() => void archiveNow()}>
+            В архив
           </button>
-        )}
-        <button className="btn primary" type="button" onClick={() => void requestClose()}>
-          Готово
-        </button>
-      </div>
+          <button className="btn small danger" type="button" disabled={!ready} onClick={() => setConfirmTrash(true)}>
+            В корзину
+          </button>
+          {closeBlocked && (
+            <button className="btn small" type="button" onClick={onClose}>
+              Закрыть без сохранения
+            </button>
+          )}
+          <button className="btn small primary" type="button" onClick={() => void requestClose()}>
+            Готово
+          </button>
+        </div>
+      </footer>
+
+      {confirmTrash && (
+        <ConfirmDialog
+          title="Удалить карточку?"
+          confirmLabel="Убрать в корзину"
+          onConfirm={() => leaveWith(() => actions.trashTask(task.id))}
+          onClose={() => setConfirmTrash(false)}
+        >
+          Карточка #{task.number} «{task.title}» уйдёт в корзину. Оттуда её можно восстановить в разделе «Архив и корзина»,
+          пока не удалишь насовсем.
+        </ConfirmDialog>
+      )}
     </Dialog>
   );
 }

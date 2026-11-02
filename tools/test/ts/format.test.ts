@@ -1,0 +1,15 @@
+import { formatDate, hostOf, isValidUrl, plural } from '../../../src/lib/format';
+const eq = (a: unknown, b: unknown, m: string) => { if (a !== b) throw new Error(`FAIL ${m}: ${a} != ${b}`); };
+eq(formatDate('2026-03-01'), '01.03.2026', 'date');
+eq(formatDate('2026-12-31'), '31.12.2026', 'date end');
+eq(isValidUrl('https://example.com/a?b=1'), true, 'https ok');
+eq(isValidUrl('http://x.io'), true, 'http ok');
+eq(isValidUrl('javascript:alert(1)'), false, 'js blocked');
+eq(isValidUrl('ftp://x.io'), false, 'ftp blocked');
+eq(isValidUrl('просто текст'), false, 'text blocked');
+eq(isValidUrl('https://exa mple.com'), false, 'space blocked');
+eq(hostOf('https://www.example.com/path'), 'example.com', 'host');
+const w = (n: number) => plural(n, 'карточка', 'карточки', 'карточек');
+eq(w(1), 'карточка', 'plural 1'); eq(w(2), 'карточки', 'plural 2'); eq(w(5), 'карточек', 'plural 5');
+eq(w(11), 'карточек', 'plural 11'); eq(w(12), 'карточек', 'plural 12'); eq(w(21), 'карточка', 'plural 21'); eq(w(24), 'карточки', 'plural 24'); eq(w(111), 'карточек', 'plural 111'); eq(w(0), 'карточек', 'plural 0');
+console.log('format tests ok');
