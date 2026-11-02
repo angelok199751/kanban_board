@@ -201,6 +201,9 @@ textarea.field { resize: vertical; font: inherit; }
 .open-link { flex: 0 0 auto; height: 26px; padding: 0 8px; }
 .small-error { margin-top: 4px; padding: 4px 8px; font-size: 12px; }
 input[type="date"].field { color-scheme: inherit; }
+/* Клик по любому месту поля открывает календарь; иконка остаётся на месте. */
+.date-field { min-width: 0; cursor: pointer; }
+.date-field input.field { width: 100%; pointer-events: none; cursor: pointer; }
 select.field { appearance: auto; }
 
 /* ---------- этап 5: представления, поиск, редактор ---------- */

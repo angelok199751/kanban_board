@@ -34,6 +34,7 @@ export function PropertyField({
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<{ raw: string | null } | null>(null);
   const [editingLink, setEditingLink] = useState(false);
+  const dateRef = useRef<HTMLInputElement>(null);
 
   // Подхватываем чужое изменение, только если в поле нет ничего, что человек ввёл сам и ещё не сохранил
   const textRef = useRef(text);
@@ -78,6 +79,23 @@ export function PropertyField({
     onDiscard();
   }
 
+  /** Календарь открывается по клику на всё поле, а не только на иконку. */
+  function openDatePicker() {
+    const input = dateRef.current;
+    if (!input) return;
+    input.focus();
+    const picker = input as HTMLInputElement & { showPicker?: () => void };
+    if (typeof picker.showPicker === 'function') {
+      try {
+        picker.showPicker();
+      } catch {
+        /* браузер может запретить вызов: остаётся обычное поведение поля */
+      }
+    } else {
+      input.click();
+    }
+  }
+
   /** Что сейчас лежит в базе, в читаемом виде. */
   function currentDisplay(): string {
     if (property.type === 'select') {
@@ -94,15 +112,27 @@ export function PropertyField({
     control = <PillSelect label={property.name} options={list} value={value?.option_id ?? null} onChange={(id) => void save(id)} />;
   } else if (property.type === 'date') {
     control = (
-      <input
-        className="field"
-        type="date"
-        value={text}
-        onChange={(e) => {
-          setText(e.target.value);
-          void save(e.target.value === '' ? null : e.target.value);
+      <div
+        className="date-field"
+        onClick={openDatePicker}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            openDatePicker();
+          }
         }}
-      />
+      >
+        <input
+          ref={dateRef}
+          className="field"
+          type="date"
+          value={text}
+          onChange={(e) => {
+            setText(e.target.value);
+            void save(e.target.value === '' ? null : e.target.value);
+          }}
+        />
+      </div>
     );
   } else if (property.type === 'url' && saved !== '' && isValidUrl(saved) && !editingLink) {
     control = (
