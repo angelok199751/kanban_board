@@ -1,4 +1,5 @@
 import type { Property, PropertyOption, TaskValue } from './types';
+import { selectedOptionIds } from './values';
 
 /** Минимум, который нужен для фильтров и сортировки: подходит и карточка доски, и карточка экспорта. */
 export interface SortableTask {
@@ -112,8 +113,9 @@ export function matchesFilters(task: { id: string }, filters: Record<string, Pro
 
     if (property.type === 'select') {
       const wanted = f.optionIds ?? [];
-      const has = v !== undefined && v.option_id !== null;
-      const ok = (has && wanted.includes(v.option_id as string)) || (!has && f.empty === true);
+      const selected = selectedOptionIds(v);
+      const has = selected.length > 0;
+      const ok = (has && selected.some((id) => wanted.includes(id))) || (!has && f.empty === true);
       if (!ok) return false;
     } else if (property.type === 'date') {
       const d = v?.value_date ?? null;
@@ -153,7 +155,14 @@ export function sortTasks<T extends SortableTask>(tasks: T[], sort: SortSpec, ct
   const keyOf = (t: T): string | null => {
     const v = ctx.valuesOf(t.id)?.get(property.id);
     if (!v) return null;
-    if (property.type === 'select') return v.option_id ? (ctx.options.get(v.option_id)?.position ?? null) : null;
+    if (property.type === 'select') {
+      // для нескольких значений порядок задаёт самый первый выбранный вариант
+      const positions = selectedOptionIds(v)
+        .map((id) => ctx.options.get(id)?.position)
+        .filter((p): p is string => p !== undefined)
+        .sort();
+      return positions[0] ?? null;
+    }
     if (property.type === 'date') return v.value_date;
     return v.value_text ? v.value_text.toLowerCase() : null;
   };

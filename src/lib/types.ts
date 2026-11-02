@@ -36,6 +36,8 @@ export interface Property {
   board_id: string;
   name: string;
   type: PropertyType;
+  /** Список разрешает несколько выбранных вариантов. Для остальных типов всегда false. */
+  multiple: boolean;
   position: string;
   hidden: boolean;
   archived_at: string | null;
@@ -55,7 +57,8 @@ export interface TaskValue {
   property_id: string;
   value_text: string | null;
   value_date: string | null; // 'YYYY-MM-DD', без часового пояса
-  option_id: string | null;
+  option_id: string | null; // одиночный список: один вариант
+  option_ids: string[]; // список с несколькими значениями
   updated_at: string; // версия значения: по ней проверяем, что его не изменили до нас
 }
 

@@ -1,4 +1,5 @@
 import type { ColorName, Column, Property, PropertyOption, TaskValue } from './types';
+import { selectedOptionIds } from './values';
 
 export interface Bucket {
   key: string;
@@ -51,9 +52,10 @@ export function computeStats(input: {
   }));
 
   const taskIds = new Set(input.tasks.map((t) => t.id));
-  const optionOf = new Map<string, string>(); // task|property -> option id
+  const optionsOf = new Map<string, string[]>(); // task|property -> выбранные варианты
   for (const v of input.values) {
-    if (v.option_id !== null && taskIds.has(v.task_id)) optionOf.set(`${v.task_id}|${v.property_id}`, v.option_id);
+    const ids = selectedOptionIds(v);
+    if (ids.length > 0 && taskIds.has(v.task_id)) optionsOf.set(`${v.task_id}|${v.property_id}`, ids);
   }
 
   const byProperty: PropertyStats[] = input.properties
@@ -64,9 +66,14 @@ export function computeStats(input: {
       const counts = new Map<string, number>(options.map((o) => [o.id, 0] as const));
       let empty = 0;
       for (const t of input.tasks) {
-        const optionId = optionOf.get(`${t.id}|${p.id}`);
-        if (optionId !== undefined && counts.has(optionId)) counts.set(optionId, (counts.get(optionId) ?? 0) + 1);
-        else empty++;
+        const selected = optionsOf.get(`${t.id}|${p.id}`) ?? [];
+        let found = false;
+        for (const optionId of selected) {
+          if (!counts.has(optionId)) continue;
+          counts.set(optionId, (counts.get(optionId) ?? 0) + 1);
+          found = true;
+        }
+        if (!found) empty++;
       }
       const buckets: Bucket[] = options.map((o) => ({ key: o.id, label: o.label, count: counts.get(o.id) ?? 0, color: o.color }));
       buckets.push({ key: `${p.id}:empty`, label: 'Не задано', count: empty });

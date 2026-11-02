@@ -1,5 +1,6 @@
 import { formatDate, hostOf, isValidUrl } from './format';
 import type { ColorName, Property, PropertyOption, PropertyType, TaskValue } from './types';
+import { selectedOptionIds } from './values';
 
 /** Готовое к показу значение свойства («пилюля») на карточке доски и в сводке окна карточки. */
 export interface CardField {
@@ -27,8 +28,11 @@ export function buildCardFields(
     if (!v) continue;
     const base = { id: p.id, name: p.name, type: p.type };
     if (p.type === 'select') {
-      const option = v.option_id ? optionById.get(v.option_id) : undefined;
-      if (option) out.push({ ...base, text: option.label, tone: option.color });
+      // каждый выбранный вариант — отдельная компактная пилюля
+      for (const optionId of selectedOptionIds(v)) {
+        const option = optionById.get(optionId);
+        if (option) out.push({ ...base, id: `${p.id}:${option.id}`, text: option.label, tone: option.color });
+      }
     } else if (p.type === 'date') {
       if (v.value_date) out.push({ ...base, text: formatDate(v.value_date), tone: 'orange' });
     } else if (p.type === 'url') {

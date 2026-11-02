@@ -116,6 +116,8 @@ export function PropertiesDialog({
 
   const active = properties.filter((p) => p.archived_at === null).sort(compareByPosition);
   const archived = properties.filter((p) => p.archived_at !== null).sort(compareByPosition);
+  // панель вариантов открыта поверх списка: берём актуальную версию свойства после каждого сохранения
+  const optionsProperty = optionsFor ? (properties.find((p) => p.id === optionsFor.id) ?? optionsFor) : null;
   const ids = active.map((p) => p.id);
 
   async function attempt(action: () => Promise<void>, failure: string) {
@@ -148,12 +150,12 @@ export function PropertiesDialog({
 
   return (
     <>
-      <Dialog title={optionsFor ? `Варианты: ${optionsFor.name}` : 'Свойства карточек'} wide onClose={onClose}>
-        {optionsFor ? (
+      <Dialog title={optionsProperty ? `Варианты: ${optionsProperty.name}` : 'Свойства карточек'} wide onClose={onClose}>
+        {optionsProperty ? (
           <OptionsPanel
             boardId={boardId}
-            property={optionsFor}
-            options={options.filter((o) => o.property_id === optionsFor.id).sort(compareByPosition)}
+            property={optionsProperty}
+            options={options.filter((o) => o.property_id === optionsProperty.id).sort(compareByPosition)}
             onBack={() => setOptionsFor(null)}
           />
         ) : (

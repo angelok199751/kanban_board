@@ -3,6 +3,7 @@ import { humanizeError } from '../../lib/supabase';
 import { useNotice } from '../../lib/notice';
 import { compareByPosition, keyBetween, planMove } from '../../lib/positions';
 import type { Board, BoardData, ColorName, KnowledgeArticle, KnowledgeBase, Property, PropertyType, SavedView, Task, TaskValue } from '../../lib/types';
+import { selectedOptionIds } from '../../lib/values';
 import * as api from './api';
 
 export const qk = {
@@ -202,11 +203,12 @@ export function useActions() {
   }
 
   // ------------------------------------------------------------ свойства
-  async function createProperty(boardId: string, name: string, type: PropertyType) {
+  async function createProperty(boardId: string, name: string, type: PropertyType, multiple = false) {
     await api.createProperty({
       board_id: boardId,
       name: name.trim(),
       type,
+      multiple: type === 'select' ? multiple : false,
       position: keyBetween(lastPosition(boardCache(boardId)?.properties ?? []), null),
     });
     await refresh(boardId);
@@ -223,6 +225,15 @@ export function useActions() {
   async function setPropertyHidden(boardId: string, id: string, hidden: boolean) {
     try {
       await api.updateProperty(id, { hidden });
+    } finally {
+      await refresh(boardId);
+    }
+  }
+
+  /** Список с несколькими значениями: база сама приводит уже сохранённые значения к новому виду. */
+  async function setPropertyMultiple(boardId: string, id: string, multiple: boolean) {
+    try {
+      await api.setPropertyMultiple(id, multiple);
     } finally {
       await refresh(boardId);
     }
@@ -296,7 +307,7 @@ export function useActions() {
 
   /** Сколько карточек (включая архивные и из корзины) используют вариант. */
   function optionUsage(boardId: string, optionId: string): number {
-    return (boardCache(boardId)?.values ?? []).filter((v) => v.option_id === optionId).length;
+    return (boardCache(boardId)?.values ?? []).filter((v) => selectedOptionIds(v).includes(optionId)).length;
   }
 
   /** Удаляет вариант. Если он выбран в карточках, сначала очищает эти значения: интерфейс спрашивает подтверждение заранее. */
@@ -311,18 +322,27 @@ export function useActions() {
 
   // ------------------------------------------------------------ значения свойств
   /**
-   * Сохраняет значение свойства у карточки. raw: для списка id варианта, для остальных текст или 'YYYY-MM-DD'.
+   * Сохраняет значение свойства у карточки. raw: для одиночного списка id варианта,
+   * для списка с несколькими значениями массив id, для остальных текст или 'YYYY-MM-DD'.
    * Пустое значение удаляет запись.
    * По умолчанию сохраняем только если значение не менялось с тех пор, как мы его видели; иначе ValueConflictError
    * (и данные доски обновляются, чтобы человек увидел, что там сейчас). force: записать поверх.
    */
-  async function setTaskValue(boardId: string, taskId: string, property: Property, raw: string | null, force = false) {
-    const value = raw === null ? '' : raw.trim();
+  async function setTaskValue(
+    boardId: string,
+    taskId: string,
+    property: Property,
+    raw: string | string[] | null,
+    force = false,
+  ) {
+    const multi = property.type === 'select' && property.multiple;
+    const optionIds = multi ? (Array.isArray(raw) ? raw : raw === null ? [] : [raw]) : [];
+    const value = multi || Array.isArray(raw) ? '' : (raw === null ? '' : raw.trim());
     const same = (v: TaskValue) => v.task_id === taskId && v.property_id === property.id;
     const existing = boardCache(boardId)?.values.find(same);
 
     try {
-      if (value === '') {
+      if (multi ? optionIds.length === 0 : value === '') {
         if (!existing && !force) return;
         if (force || !existing) await api.deleteValue(taskId, property.id);
         else await api.deleteValueChecked(existing);
@@ -334,7 +354,8 @@ export function useActions() {
         property_id: property.id,
         value_text: property.type === 'text' || property.type === 'url' ? value : null,
         value_date: property.type === 'date' ? value : null,
-        option_id: property.type === 'select' ? value : null,
+        option_id: property.type === 'select' && !multi ? value : null,
+        option_ids: multi ? [...new Set(optionIds)] : [],
       };
       const saved = force ? await api.upsertValue(next) : await api.saveValueChecked(existing, next);
       patchCache(boardId, (d) => ({ ...d, values: [...d.values.filter((v) => !same(v)), saved] }));
@@ -469,6 +490,7 @@ export function useActions() {
     createProperty,
     renameProperty,
     setPropertyHidden,
+    setPropertyMultiple,
     setPropertyArchived,
     deletePropertyForever,
     moveProperty,

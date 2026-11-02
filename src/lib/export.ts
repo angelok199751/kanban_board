@@ -1,4 +1,5 @@
 import type { Column, ExportTask, Property, PropertyOption, PropertyType, TaskValue } from './types';
+import { selectedOptionIds } from './values';
 import { sortTasks, type SortSpec, type ViewContext } from './viewConfig';
 import type { Cell, Table } from './xlsx';
 
@@ -84,7 +85,12 @@ export function buildTable(tasks: ExportTask[], fields: ExportField[], src: Expo
       default: {
         const v = f.propertyId ? valuesByTask.get(t.id)?.get(f.propertyId) : undefined;
         if (!v) return null;
-        if (f.kind === 'select') return v.option_id ? (optionLabel.get(v.option_id) ?? null) : null;
+        if (f.kind === 'select') {
+          const labels = selectedOptionIds(v)
+            .map((id) => optionLabel.get(id))
+            .filter((label): label is string => label !== undefined);
+          return labels.length > 0 ? labels.join(', ') : null;
+        }
         if (f.kind === 'date') return v.value_date ? { date: v.value_date } : null;
         return v.value_text ?? null; // текст и ссылка (URL как есть)
       }

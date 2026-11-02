@@ -24,4 +24,17 @@ eq(percentOf(1, 4), 25, 'percent'); eq(percentOf(1, 3), 33, 'percent rounds'); e
 
 const filtered = computeStats({ columns, tasks: [tasks[0]], properties, options, values });
 eq(filtered.total, 1, 'filtered total'); eq(filtered.byColumn[0].count, 1, 'filtered column'); eq(filtered.byProperty[0].buckets[0].count, 1, 'filtered option');
+
+const multi = computeStats({
+  columns,
+  tasks,
+  properties,
+  options,
+  values: [
+    v('t1', 'who', 'anna'),
+    { task_id: 't2', property_id: 'who', option_id: null, option_ids: ['anna', 'boris'], value_text: null, value_date: null, updated_at: 'x' },
+    v('t3', 'who', 'boris'),
+  ],
+});
+eq(multi.byProperty[0].buckets.map((b) => [b.label, b.count]), [['anna', 2], ['boris', 2], ['Не задано', 1]], 'multi select counts every chosen option');
 console.log('stats tests ok');

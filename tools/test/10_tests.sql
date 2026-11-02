@@ -628,5 +628,62 @@ end $$;
 rollback;
 \echo T12 ok: окончательное удаление колонок и свойств
 
+-- ===========================================================================
+-- T13. Несколько значений у свойства-списка (миграция 007)
+-- ===========================================================================
+begin;
+set local role authenticated;
+select set_config('request.jwt.claim.sub', :'bob', true);
+do $$
+declare
+  b uuid; c uuid; t uuid; p uuid; p2 uuid; o1 uuid; o2 uuid; o3 uuid; ids uuid[];
+begin
+  insert into public.boards (name, position) values ('Доска 007', 'a0') returning id into b;
+  insert into public.board_columns (board_id, name, position) values (b, 'Колонка', 'a0') returning id into c;
+  insert into public.tasks (board_id, column_id, title, position) values (b, c, 'Карточка', 'a0') returning id into t;
+  insert into public.properties (board_id, name, type, position) values (b, 'Теги', 'select', 'a0') returning id into p;
+  insert into public.property_options (property_id, label, position) values (p, 'Первый', 'a0') returning id into o1;
+  insert into public.property_options (property_id, label, position) values (p, 'Второй', 'a1') returning id into o2;
+  insert into public.task_values (task_id, property_id, option_id) values (t, p, o1);
+
+  -- включение режима переносит одиночное значение в массив
+  perform public.set_property_multiple(p, true);
+  assert exists (
+    select 1 from public.task_values
+     where task_id = t and property_id = p and option_id is null and option_ids = array[o1]
+  ), 'T13: одиночное значение не стало массивом';
+
+  update public.task_values set option_ids = array[o1, o2] where task_id = t and property_id = p;
+
+  -- удаление варианта убирает его из массива, значение остаётся
+  perform public.clear_option_values(o1);
+  select option_ids into ids from public.task_values where task_id = t and property_id = p;
+  assert ids = array[o2], 'T13: вариант не удалён из массива';
+
+  -- выключение режима оставляет первый выбранный вариант
+  perform public.set_property_multiple(p, false);
+  assert exists (
+    select 1 from public.task_values
+     where task_id = t and property_id = p and option_id = o2 and option_ids = '{}'
+  ), 'T13: массив не свёлся к одному варианту';
+
+  -- пустой множественный выбор запрещён (пустое значение = строки нет)
+  perform public.set_property_multiple(p, true);
+  begin
+    update public.task_values set option_ids = '{}' where task_id = t and property_id = p;
+    raise exception 'ТЕСТ ПРОВАЛЕН: сохранён пустой множественный выбор';
+  exception when sqlstate '23514' then null; end;
+
+  -- чужой вариант запрещён
+  insert into public.properties (board_id, name, type, position) values (b, 'Другой список', 'select', 'a1') returning id into p2;
+  insert into public.property_options (property_id, label, position) values (p2, 'Чужой', 'a0') returning id into o3;
+  begin
+    update public.task_values set option_ids = array[o2, o3] where task_id = t and property_id = p;
+    raise exception 'ТЕСТ ПРОВАЛЕН: принят вариант чужого свойства';
+  exception when sqlstate '23514' then null; end;
+end $$;
+rollback;
+\echo T13 ok: несколько значений свойства-списка
+
 \echo ============================================
 \echo ВСЕ ТЕСТЫ ПРОШЛИ

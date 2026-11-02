@@ -53,6 +53,17 @@ eq(table.rows[1], [{ date: '2026-03-01' }, 'Вторая в Новых', 1, 'А�
 eq(table.rows[0], [null, 'Первая в Новых', 2, null, null, null, 'Активна', 'Новые'], 'empty cells are null');
 eq(table.rows[2][6], 'В архиве', 'archived state'); eq(table.rows[3][6], 'Удалена', 'deleted state');
 
+// ---- несколько значений списка выгружаются одной строкой через запятую
+const multiOptions: PropertyOption[] = [...options, { id: 'boris', property_id: 'who', label: 'Борис', color: 'green', position: 'a1' }];
+const multiValues: TaskValue[] = [
+  { task_id: 't2', property_id: 'who', option_id: null, option_ids: ['anna', 'boris'], value_text: null, value_date: null },
+];
+eq(
+  buildTable([tasks[1]], [propertyField(properties[0])], { columns, options: multiOptions, values: multiValues }).rows[0],
+  ['Анна, Борис'],
+  'multi select joined labels',
+);
+
 // ---- имя файла
 eq(exportFileName('Релиз: 143/1', 'Колонка "Новые"', 'xlsx', new Date(2026, 2, 5)), 'Релиз__143_1_Колонка__Новые__2026-03-05.xlsx', 'file name');
 

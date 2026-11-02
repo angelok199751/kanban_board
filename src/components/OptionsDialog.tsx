@@ -68,6 +68,14 @@ export function OptionsPanel({
     }
   }
 
+  async function toggleMultiple(multiple: boolean) {
+    try {
+      await actions.setPropertyMultiple(boardId, property.id, multiple);
+    } catch (e) {
+      notify(`Не удалось изменить режим списка: ${errText(e)}`);
+    }
+  }
+
   async function askDelete(option: PropertyOption) {
     const usage = actions.optionUsage(boardId, option.id);
     if (usage === 0) {
@@ -83,6 +91,20 @@ export function OptionsPanel({
 
   return (
     <>
+      <label className="check-line multi-mode">
+        <input
+          type="checkbox"
+          checked={property.multiple}
+          onChange={(e) => void toggleMultiple(e.target.checked)}
+        />
+        <span>Несколько значений</span>
+      </label>
+      <p className="muted small-note multi-mode-note">
+        {property.multiple
+          ? 'В карточке можно выбрать несколько вариантов; каждый убирается отдельно.'
+          : 'В карточке выбирается один вариант. Включи, если нужен множественный выбор.'}
+      </p>
+
       <div className="options-list">
         {options.length === 0 && <div className="muted">Вариантов пока нет.</div>}
         {options.map((o) => (

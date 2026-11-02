@@ -4,12 +4,14 @@ import { formatDate, isValidUrl } from '../lib/format';
 import { compareByPosition } from '../lib/positions';
 import { humanizeError } from '../lib/supabase';
 import type { Property, PropertyOption, TaskValue } from '../lib/types';
+import { selectedOptionIds } from '../lib/values';
 import { PillSelect } from './PillSelect';
 
 /**
  * Поле значения свойства в окне карточки. Сохраняется само:
  * список и дата сразу при выборе, текст и ссылка при выходе из поля.
- * onSave получает null (очистить), id варианта, текст или 'YYYY-MM-DD'; force записывает поверх чужого изменения.
+ * onSave получает null (очистить), id варианта, массив id для списка с несколькими значениями,
+ * текст или 'YYYY-MM-DD'; force записывает поверх чужого изменения.
  *
  * Значения-списки показываются цветными капсулами, сохранённая ссылка читается ссылкой с кнопкой «изменить».
  * Если значение тем временем изменил другой участник, введённое не пропадает: показываем, что там сейчас,
@@ -26,15 +28,27 @@ export function PropertyField({
   property: Property;
   options: PropertyOption[];
   value: TaskValue | undefined;
-  onSave: (raw: string | null, force?: boolean) => Promise<void>;
+  onSave: (raw: string | string[] | null, force?: boolean) => Promise<void>;
   onDiscard: () => void;
 }) {
   const saved = property.type === 'date' ? (value?.value_date ?? '') : (value?.value_text ?? '');
+  const savedIds = property.type === 'select' ? selectedOptionIds(value) : [];
+  const savedIdsKey = savedIds.join('|');
   const [text, setText] = useState(saved);
+  const [multiIds, setMultiIds] = useState<string[]>(savedIds);
   const [error, setError] = useState<string | null>(null);
-  const [conflict, setConflict] = useState<{ raw: string | null } | null>(null);
+  const [conflict, setConflict] = useState<{ raw: string | string[] | null } | null>(null);
   const [editingLink, setEditingLink] = useState(false);
   const dateRef = useRef<HTMLInputElement>(null);
+
+  // Множественный выбор применяется сразу, поэтому локальный список должен обновляться без ожидания базы.
+  const multiRef = useRef(multiIds);
+  multiRef.current = multiIds;
+  const lastSavedIds = useRef(savedIdsKey);
+  useEffect(() => {
+    if (multiRef.current.join('|') === lastSavedIds.current) setMultiIds(savedIds);
+    lastSavedIds.current = savedIdsKey;
+  }, [savedIdsKey]);
 
   // Подхватываем чужое изменение, только если в поле нет ничего, что человек ввёл сам и ещё не сохранил
   const textRef = useRef(text);
@@ -46,7 +60,7 @@ export function PropertyField({
   }, [saved]);
 
   /** Возвращает true, если значение сохранено. При ошибке или конфликте введённое остаётся в поле. */
-  async function save(raw: string | null, force = false): Promise<boolean> {
+  async function save(raw: string | string[] | null, force = false): Promise<boolean> {
     setError(null);
     try {
       await onSave(raw, force);
@@ -73,6 +87,7 @@ export function PropertyField({
 
   function takeCurrent() {
     setText(saved);
+    setMultiIds(savedIds);
     setConflict(null);
     setError(null);
     setEditingLink(false);
@@ -99,9 +114,12 @@ export function PropertyField({
   /** Что сейчас лежит в базе, в читаемом виде. */
   function currentDisplay(): string {
     if (property.type === 'select') {
-      const o = options.find((x) => x.id === value?.option_id);
-      return o ? o.label : 'не выбрано';
+      const labels = selectedOptionIds(value)
+        .map((id) => options.find((x) => x.id === id)?.label)
+        .filter((label): label is string => label !== undefined);
+      return labels.length > 0 ? labels.join(', ') : 'не выбрано';
     }
+
     if (property.type === 'date') return saved ? formatDate(saved) : 'пусто';
     return saved !== '' ? saved : 'пусто';
   }
@@ -109,7 +127,29 @@ export function PropertyField({
   let control;
   if (property.type === 'select') {
     const list = options.filter((o) => o.property_id === property.id).sort(compareByPosition);
-    control = <PillSelect label={property.name} options={list} value={value?.option_id ?? null} onChange={(id) => void save(id)} />;
+    control = property.multiple ? (
+      <PillSelect
+        multiple
+        label={property.name}
+        options={list}
+        value={multiIds}
+        onChange={(next) => {
+          const ids = Array.isArray(next) ? next : next === null ? [] : [next];
+          setMultiIds(ids);
+          void save(ids.length > 0 ? ids : null);
+        }}
+      />
+    ) : (
+      <PillSelect
+        label={property.name}
+        options={list}
+        value={selectedOptionIds(value)[0] ?? null}
+        onChange={(next) => {
+          const id = Array.isArray(next) ? (next[0] ?? null) : next;
+          void save(id);
+        }}
+      />
+    );
   } else if (property.type === 'date') {
     control = (
       <div

@@ -38,9 +38,9 @@ export class ValueConflictError extends Error {
 const BOARD_FIELDS = 'id, name, description, position, archived_at';
 const COLUMN_FIELDS = 'id, board_id, name, color, position, archived_at';
 const TASK_FIELDS = 'id, board_id, column_id, number, title, position, version, archived_at, deleted_at';
-const PROPERTY_FIELDS = 'id, board_id, name, type, position, hidden, archived_at';
+const PROPERTY_FIELDS = 'id, board_id, name, type, multiple, position, hidden, archived_at';
 const OPTION_FIELDS = 'id, property_id, label, color, position';
-const VALUE_FIELDS = 'task_id, property_id, value_text, value_date, option_id, updated_at';
+const VALUE_FIELDS = 'task_id, property_id, value_text, value_date, option_id, option_ids, updated_at';
 
 type RawResult = PromiseLike<{ data: unknown; error: { message: string } | null }>;
 
@@ -139,6 +139,7 @@ export async function getBoardData(boardId: string): Promise<BoardData> {
       value_text: v.value_text,
       value_date: v.value_date,
       option_id: v.option_id,
+      option_ids: v.option_ids ?? [],
       updated_at: v.updated_at,
     })),
   };
@@ -195,6 +196,7 @@ export function createProperty(input: {
   board_id: string;
   name: string;
   type: PropertyType;
+  multiple?: boolean;
   position: string;
 }): Promise<Property> {
   return run<Property>(supabase.from('properties').insert(input).select(PROPERTY_FIELDS).single());
@@ -202,9 +204,18 @@ export function createProperty(input: {
 
 export function updateProperty(
   id: string,
-  patch: { name?: string; hidden?: boolean; position?: string; archived_at?: string | null },
+  patch: { name?: string; hidden?: boolean; multiple?: boolean; position?: string; archived_at?: string | null },
 ): Promise<Property> {
   return run<Property>(supabase.from('properties').update(patch).eq('id', id).select(PROPERTY_FIELDS).single());
+}
+
+/** Переключает режим списка и заодно приводит уже сохранённые значения к новому виду. */
+export async function setPropertyMultiple(propertyId: string, multiple: boolean): Promise<void> {
+  const { error } = await supabase.rpc('set_property_multiple', {
+    p_property_id: propertyId,
+    p_multiple: multiple,
+  });
+  if (error) throw new Error(error.message);
 }
 
 export function createOption(input: {
@@ -226,7 +237,9 @@ export async function deleteOption(id: string): Promise<void> {
 }
 
 export async function clearOptionValues(optionId: string): Promise<void> {
-  await run<unknown[]>(supabase.from('task_values').delete().eq('option_id', optionId).select('task_id'));
+  // Учитывает и одиночные option_id, и массивы option_ids.
+  const { error } = await supabase.rpc('clear_option_values', { p_option_id: optionId });
+  if (error) throw new Error(error.message);
 }
 
 // ---------------------------------------------------------------- значения свойств
@@ -259,7 +272,12 @@ export async function saveValueChecked(existing: TaskValue | undefined, next: Ne
     const rows = await run<TaskValue[]>(
       supabase
         .from('task_values')
-        .update({ value_text: next.value_text, value_date: next.value_date, option_id: next.option_id })
+        .update({
+          value_text: next.value_text,
+          value_date: next.value_date,
+          option_id: next.option_id,
+          option_ids: next.option_ids,
+        })
         .eq('task_id', next.task_id)
         .eq('property_id', next.property_id)
         .eq('updated_at', existing.updated_at)
@@ -405,6 +423,7 @@ export async function getExportData(
       value_text: v.value_text,
       value_date: v.value_date,
       option_id: v.option_id,
+      option_ids: v.option_ids ?? [],
       updated_at: v.updated_at,
     })),
   };

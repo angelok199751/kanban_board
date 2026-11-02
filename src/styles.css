@@ -585,6 +585,23 @@ select.field.small { width: auto; padding: 6px 10px; font-size: 12px; }
 .pill-caret { flex: 0 0 auto; color: var(--muted); font-size: 10px; }
 .pill-empty { padding: 4px 6px; color: var(--muted); font-size: 12px; }
 .pill-select .pill, .pill-menu .pill { padding: 3px 9px; font-size: 11px; }
+.pill-select-btn.multi { align-items: flex-start; padding: 2px 4px 2px 3px; cursor: default; }
+.pill-values { display: flex; flex: 1; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; }
+.pill-empty-btn { padding: 1px 4px; border: 0; background: transparent; cursor: pointer; }
+.pill-removable { gap: 4px; font-family: inherit; cursor: pointer; }
+.pill-removable:hover { filter: brightness(1.14); }
+.pill-remove { margin-left: 1px; font-size: 12px; line-height: 1; opacity: .7; }
+.pill-removable:hover .pill-remove { opacity: 1; }
+.pill-caret-btn {
+  display: inline-grid; flex: 0 0 auto; place-items: center; width: 22px; height: 22px; margin-top: 1px;
+  border: 0; border-radius: 6px; color: var(--muted); background: transparent; cursor: pointer;
+}
+.pill-caret-btn:hover, .pill-caret-btn:focus-visible { color: var(--text); background: var(--hover); outline: none; }
+.pill-option-multi { justify-content: space-between; gap: 8px; }
+.pill-check { flex: 0 0 14px; color: var(--accent); font-size: 11px; text-align: center; }
+.pill-clear { margin-bottom: 2px; }
+.multi-mode { margin-top: 2px; }
+.multi-mode-note { margin: 0 0 6px; }
 .pill-menu {
   position: fixed; z-index: 90; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; padding: 6px;
   border: 1px solid var(--editor-border); border-radius: 12px; background: var(--panel); box-shadow: 0 14px 40px var(--shadow);

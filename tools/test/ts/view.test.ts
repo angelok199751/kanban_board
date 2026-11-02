@@ -47,6 +47,16 @@ eq(f({ due: { to: '2026-03-05' } }), ['t2'], 'date to');
 eq(f({ due: { from: '2026-03-01', to: '2026-03-10' } }), ['t1', 't2'], 'date range inclusive');
 eq(f({ ghost: { contains: 'x' } }), ['t1', 't2', 't3'], 'unknown property ignored');
 eq(f({ who: { optionIds: ['anna'] }, note: { contains: 'нет' } }), [], 'AND');
+const multiCtx: ViewContext = {
+  ...ctx,
+  valuesOf: (id) =>
+    id === 't4'
+      ? new Map([['who', { task_id: 't4', property_id: 'who', option_id: null, option_ids: ['anna', 'boris'], value_text: null, value_date: null, updated_at: 'x' }]])
+      : undefined,
+};
+eq(matchesFilters({ id: 't4' }, { who: { optionIds: ['boris'] } }, multiCtx), true, 'multi select matches any chosen option');
+eq(matchesFilters({ id: 't4' }, { who: { empty: true } }, multiCtx), false, 'multi select is not empty');
+eq(matchesFilters({ id: 't4' }, { who: { optionIds: ['ghost'] } }, multiCtx), false, 'multi select no match');
 eq(countActiveFilters(normalizeConfig({ filters: { who: { empty: true }, ghost: { empty: true } } }), properties), 1, 'count ignores missing property');
 
 // sort
