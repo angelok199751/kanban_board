@@ -92,13 +92,19 @@ code { background: var(--panel2); padding: 1px 6px; border-radius: 6px; }
 .dialog .row { margin-top: 14px; justify-content: flex-end; }
 
 /* ---------- каркас: боковая панель + рабочая область ---------- */
-.app-shell { display: flex; height: 100vh; overflow: hidden; }
+.app-shell { --sidebar-width: 236px; display: flex; height: 100vh; overflow: hidden; }
 .sidebar {
-  flex: 0 0 236px; display: flex; flex-direction: column; gap: 6px;
-  padding: 16px 12px; overflow-y: auto;
+  flex: 0 0 var(--sidebar-width); width: var(--sidebar-width); display: flex; flex-direction: column; gap: 6px;
+  padding: 16px 12px; overflow-x: hidden; overflow-y: auto;
   background: var(--sidebar-bg); border-right: 1px solid var(--border);
+  transition: margin-left .24s cubic-bezier(.2, .8, .2, 1), opacity .16s ease, transform .24s cubic-bezier(.2, .8, .2, 1), visibility 0s;
 }
-.app-shell.collapsed .sidebar { display: none; }
+/* Панель не сжимается по ширине: при закрытии она уезжает влево целиком, поэтому текст не перестраивается. */
+.app-shell.collapsed .sidebar {
+  margin-left: calc(-1 * var(--sidebar-width)); opacity: 0; transform: translateX(-10px);
+  visibility: hidden; pointer-events: none;
+  transition: margin-left .24s cubic-bezier(.2, .8, .2, 1), opacity .16s ease, transform .24s cubic-bezier(.2, .8, .2, 1), visibility 0s linear .24s;
+}
 .sidebar-brand { display: flex; align-items: center; gap: 10px; padding: 0 6px 10px; }
 .sidebar-title { font-weight: 750; font-size: 16px; }
 .sidebar-section-head {

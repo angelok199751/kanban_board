@@ -131,6 +131,7 @@ export function Shell({ member }: { member: Member }) {
         bases={bases}
         currentBaseId={currentBase ? currentBase.id : null}
         archiveActive={inArchive}
+        collapsed={collapsed}
         onSelect={go}
         onCreate={() => setDialog('newBoard')}
         onSelectBase={toKnowledge}
@@ -146,6 +147,8 @@ export function Shell({ member }: { member: Member }) {
               type="button"
               title={collapsed ? 'Показать панель' : 'Скрыть панель'}
               aria-label={collapsed ? 'Показать панель' : 'Скрыть панель'}
+              aria-controls="app-sidebar"
+              aria-expanded={!collapsed}
               onClick={toggleSidebar}
             >
               ☰

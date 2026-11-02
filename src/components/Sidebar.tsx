@@ -7,6 +7,7 @@ export function Sidebar({
   bases,
   currentBaseId,
   archiveActive,
+  collapsed,
   onSelect,
   onCreate,
   onSelectBase,
@@ -18,6 +19,7 @@ export function Sidebar({
   bases: KnowledgeBase[];
   currentBaseId: string | null;
   archiveActive: boolean;
+  collapsed: boolean;
   onSelect: (id: string) => void;
   onCreate: () => void;
   onSelectBase: (id: string) => void;
@@ -25,7 +27,7 @@ export function Sidebar({
   onArchive: () => void;
 }) {
   return (
-    <aside className="sidebar" aria-label="Навигация">
+    <aside id="app-sidebar" className="sidebar" aria-label="Навигация" aria-hidden={collapsed || undefined}>
       <div className="sidebar-brand">
         <div className="logo small">✦</div>
         <span className="sidebar-title">QA Flow</span>
