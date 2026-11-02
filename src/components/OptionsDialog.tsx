@@ -5,21 +5,24 @@ import { useNotice } from '../lib/notice';
 import { humanizeError } from '../lib/supabase';
 import type { ColorName, Property, PropertyOption } from '../lib/types';
 import { ConfirmDialog } from './ConfirmDialog';
-import { Dialog } from './Dialog';
 
 const errText = (e: unknown) => humanizeError(e instanceof Error ? e.message : String(e));
 
-/** Варианты выпадающего списка: изменения применяются сразу. */
-export function OptionsDialog({
+/**
+ * Варианты выпадающего списка: изменения применяются сразу.
+ * Панель показывается внутри уже открытого окна настроек, поэтому переключение
+ * «Свойства → Варианты» не пересоздаёт окно и не запускает анимацию заново.
+ */
+export function OptionsPanel({
   boardId,
   property,
   options,
-  onClose,
+  onBack,
 }: {
   boardId: string;
   property: Property;
   options: PropertyOption[];
-  onClose: () => void;
+  onBack: () => void;
 }) {
   const actions = useActions();
   const { notify } = useNotice();
@@ -80,81 +83,79 @@ export function OptionsDialog({
 
   return (
     <>
-      <Dialog title={`Варианты: ${property.name}`} onClose={onClose}>
-        <div className="options-list">
-          {options.length === 0 && <div className="muted">Вариантов пока нет.</div>}
-          {options.map((o) => (
-            <div key={o.id} className="option-block">
-              <div className="option-row">
-                <button
-                  type="button"
-                  className="color-dot"
-                  style={{ background: COLORS[o.color] }}
-                  title="Сменить цвет"
-                  aria-label="Сменить цвет"
-                  onClick={() => setPaletteFor(paletteFor === o.id ? null : o.id)}
-                />
-                <input
-                  key={`${o.id}:${o.label}`}
-                  className="field"
-                  maxLength={60}
-                  defaultValue={o.label}
-                  onBlur={(e) => void rename(o, e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') e.currentTarget.blur();
-                  }}
-                />
-                <button
-                  type="button"
-                  className="icon-btn"
-                  title="Удалить вариант"
-                  aria-label="Удалить вариант"
-                  onClick={() => void askDelete(o)}
-                >
-                  ✕
-                </button>
-              </div>
-              {paletteFor === o.id && (
-                <div className="swatches">
-                  {COLOR_NAMES.map((c) => (
-                    <button
-                      key={c}
-                      type="button"
-                      aria-label={c}
-                      className={c === o.color ? 'swatch selected' : 'swatch'}
-                      style={{ background: COLORS[c] }}
-                      onClick={() => void recolor(o, c)}
-                    />
-                  ))}
-                </div>
-              )}
+      <div className="options-list">
+        {options.length === 0 && <div className="muted">Вариантов пока нет.</div>}
+        {options.map((o) => (
+          <div key={o.id} className="option-block">
+            <div className="option-row">
+              <button
+                type="button"
+                className="color-dot"
+                style={{ background: COLORS[o.color] }}
+                title="Сменить цвет"
+                aria-label="Сменить цвет"
+                onClick={() => setPaletteFor(paletteFor === o.id ? null : o.id)}
+              />
+              <input
+                key={`${o.id}:${o.label}`}
+                className="field"
+                maxLength={60}
+                defaultValue={o.label}
+                onBlur={(e) => void rename(o, e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') e.currentTarget.blur();
+                }}
+              />
+              <button
+                type="button"
+                className="icon-btn"
+                title="Удалить вариант"
+                aria-label="Удалить вариант"
+                onClick={() => void askDelete(o)}
+              >
+                ✕
+              </button>
             </div>
-          ))}
-        </div>
+            {paletteFor === o.id && (
+              <div className="swatches">
+                {COLOR_NAMES.map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    aria-label={c}
+                    className={c === o.color ? 'swatch selected' : 'swatch'}
+                    style={{ background: COLORS[c] }}
+                    onClick={() => void recolor(o, c)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
 
-        <div className="option-row add-row">
-          <input
-            className="field"
-            placeholder="Новый вариант"
-            maxLength={60}
-            value={newLabel}
-            disabled={adding}
-            onChange={(e) => setNewLabel(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') void add();
-            }}
-          />
-          <button className="btn primary small" type="button" disabled={adding || newLabel.trim() === ''} onClick={() => void add()}>
-            Добавить
-          </button>
-        </div>
+      <div className="option-row add-row">
+        <input
+          className="field"
+          placeholder="Новый вариант"
+          maxLength={60}
+          value={newLabel}
+          disabled={adding}
+          onChange={(e) => setNewLabel(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') void add();
+          }}
+        />
+        <button className="btn primary small" type="button" disabled={adding || newLabel.trim() === ''} onClick={() => void add()}>
+          Добавить
+        </button>
+      </div>
 
-        <div className="row end">
-          <button className="btn" type="button" onClick={onClose}>
-            Готово
-          </button>
-        </div>
-      </Dialog>
+      <div className="row end">
+        <button className="btn" type="button" onClick={onBack}>
+          ← К свойствам
+        </button>
+      </div>
 
       {toDelete && (
         <ConfirmDialog

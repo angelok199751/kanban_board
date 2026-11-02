@@ -26,6 +26,7 @@ import type { Property, PropertyOption, PropertyType, TaskValue } from '../lib/t
 import { ConfirmDialog, DangerConfirmDialog } from './ConfirmDialog';
 import { Dialog } from './Dialog';
 import { IconArchive } from './Icons';
+import { OptionsPanel } from './OptionsDialog';
 
 const errText = (e: unknown) => humanizeError(e instanceof Error ? e.message : String(e));
 const TYPES: PropertyType[] = ['select', 'text', 'url', 'date'];
@@ -91,18 +92,17 @@ export function PropertiesDialog({
   properties,
   options,
   values,
-  onOptions,
   onClose,
 }: {
   boardId: string;
   properties: Property[];
   options: PropertyOption[];
   values: TaskValue[];
-  onOptions: (property: Property) => void;
   onClose: () => void;
 }) {
   const actions = useActions();
   const { notify } = useNotice();
+  const [optionsFor, setOptionsFor] = useState<Property | null>(null);
   const [toArchive, setToArchive] = useState<Property | null>(null);
   const [toDelete, setToDelete] = useState<Property | null>(null);
   const [newName, setNewName] = useState('');
@@ -148,7 +148,16 @@ export function PropertiesDialog({
 
   return (
     <>
-      <Dialog title="Свойства карточек" wide onClose={onClose}>
+      <Dialog title={optionsFor ? `Варианты: ${optionsFor.name}` : 'Свойства карточек'} wide onClose={onClose}>
+        {optionsFor ? (
+          <OptionsPanel
+            boardId={boardId}
+            property={optionsFor}
+            options={options.filter((o) => o.property_id === optionsFor.id).sort(compareByPosition)}
+            onBack={() => setOptionsFor(null)}
+          />
+        ) : (
+          <>
         <p className="muted small-note">
           Свойства общие для всех карточек доски. Значок глаза скрывает свойство с карточки на доске, но оно остаётся в
           окне карточки.
@@ -174,7 +183,7 @@ export function PropertiesDialog({
                   onToggleHidden={() =>
                     void attempt(() => actions.setPropertyHidden(boardId, p.id, !p.hidden), 'Не удалось изменить видимость')
                   }
-                  onOptions={() => onOptions(p)}
+                  onOptions={() => setOptionsFor(p)}
                   onArchive={() => setToArchive(p)}
                 />
               ))}
@@ -234,6 +243,8 @@ export function PropertiesDialog({
             Готово
           </button>
         </div>
+          </>
+        )}
       </Dialog>
 
       {toDelete && (

@@ -31,7 +31,7 @@ import { useNotice } from '../lib/notice';
 import { mergeIntoFull } from '../lib/order';
 import { compareByPosition } from '../lib/positions';
 import { humanizeError } from '../lib/supabase';
-import type { Board, Column, Property, SavedView, Task, TaskValue } from '../lib/types';
+import type { Board, Column, SavedView, Task, TaskValue } from '../lib/types';
 import { useDebounced } from '../lib/useDebounced';
 import { countActiveFilters, isShownOnCard, matchesFilters, sortTasks, type ViewContext } from '../lib/viewConfig';
 import { ColumnDialog } from './ColumnDialog';
@@ -40,7 +40,6 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { ExportDialog } from './ExportDialog';
 import { FieldsDialog } from './FieldsDialog';
 import { FiltersDialog } from './FiltersDialog';
-import { OptionsDialog } from './OptionsDialog';
 import { PropertiesDialog } from './PropertiesDialog';
 import { TaskCardView } from './TaskCard';
 import { TaskDialog } from './TaskDialog';
@@ -55,7 +54,6 @@ type DialogState =
   | { kind: 'archiveColumn'; column: Column }
   | { kind: 'task'; task: Task }
   | { kind: 'properties' }
-  | { kind: 'options'; propertyId: string }
   | { kind: 'filters' }
   | { kind: 'export' }
   | { kind: 'fields' }
@@ -213,9 +211,6 @@ export function BoardView({ board, boards }: { board: Board; boards: Board[] }) 
     setCollapsedColumns(next);
     writeIdSet(collapsedKey, next);
   };
-
-  const optionsProperty: Property | null =
-    dialog?.kind === 'options' ? (properties.find((p) => p.id === dialog.propertyId) ?? null) : null;
 
   // ------------------------------------------------------------ перетаскивание
   function onDragStart(e: DragStartEvent) {
@@ -543,16 +538,7 @@ export function BoardView({ board, boards }: { board: Board; boards: Board[] }) 
           properties={properties}
           options={options}
           values={query.data?.values ?? []}
-          onOptions={(p) => setDialog({ kind: 'options', propertyId: p.id })}
           onClose={() => setDialog(null)}
-        />
-      )}
-      {dialog?.kind === 'options' && optionsProperty && (
-        <OptionsDialog
-          boardId={board.id}
-          property={optionsProperty}
-          options={options.filter((o) => o.property_id === optionsProperty.id).sort(compareByPosition)}
-          onClose={() => setDialog({ kind: 'properties' })}
         />
       )}
       {dialog?.kind === 'filters' && (
