@@ -35,12 +35,14 @@ function PropertyRow({
   property,
   onRename,
   onToggleHidden,
+  onToggleMultiple,
   onOptions,
   onArchive,
 }: {
   property: Property;
   onRename: (name: string) => void;
   onToggleHidden: () => void;
+  onToggleMultiple: () => void;
   onOptions: () => void;
   onArchive: () => void;
 }) {
@@ -64,6 +66,21 @@ function PropertyRow({
         }}
       />
       <span className="type-badge">{PROPERTY_TYPE_LABELS[property.type]}</span>
+      {property.type === 'select' ? (
+        <label
+          className="prop-multi"
+          title={
+            property.multiple
+              ? 'В карточке можно выбрать несколько вариантов'
+              : 'В карточке выбирается один вариант: включи, если нужно несколько'
+          }
+        >
+          <input type="checkbox" checked={property.multiple} onChange={onToggleMultiple} />
+          <span>несколько</span>
+        </label>
+      ) : (
+        <span aria-hidden="true" />
+      )}
       {property.type === 'select' ? (
         <button className="btn small" type="button" onClick={onOptions}>
           Варианты
@@ -107,6 +124,7 @@ export function PropertiesDialog({
   const [toDelete, setToDelete] = useState<Property | null>(null);
   const [newName, setNewName] = useState('');
   const [newType, setNewType] = useState<PropertyType>('select');
+  const [newMultiple, setNewMultiple] = useState(false);
   const [adding, setAdding] = useState(false);
 
   const sensors = useSensors(
@@ -142,8 +160,9 @@ export function PropertiesDialog({
     if (name === '') return;
     setAdding(true);
     await attempt(async () => {
-      await actions.createProperty(boardId, name, newType);
+      await actions.createProperty(boardId, name, newType, newType === 'select' && newMultiple);
       setNewName('');
+      setNewMultiple(false);
     }, 'Не удалось добавить свойство');
     setAdding(false);
   }
@@ -185,6 +204,12 @@ export function PropertiesDialog({
                   onToggleHidden={() =>
                     void attempt(() => actions.setPropertyHidden(boardId, p.id, !p.hidden), 'Не удалось изменить видимость')
                   }
+                  onToggleMultiple={() =>
+                    void attempt(
+                      () => actions.setPropertyMultiple(boardId, p.id, !p.multiple),
+                      'Не удалось изменить режим списка',
+                    )
+                  }
                   onOptions={() => setOptionsFor(p)}
                   onArchive={() => setToArchive(p)}
                 />
@@ -205,13 +230,27 @@ export function PropertiesDialog({
               if (e.key === 'Enter') void add();
             }}
           />
-          <select className="field" value={newType} aria-label="Тип свойства" onChange={(e) => setNewType(e.target.value as PropertyType)}>
+          <select
+            className="field"
+            value={newType}
+            aria-label="Тип свойства"
+            onChange={(e) => {
+              setNewType(e.target.value as PropertyType);
+              if (e.target.value !== 'select') setNewMultiple(false);
+            }}
+          >
             {TYPES.map((t) => (
               <option key={t} value={t}>
                 {PROPERTY_TYPE_LABELS[t]}
               </option>
             ))}
           </select>
+          {newType === 'select' && (
+            <label className="check-line prop-new-multi" title="Разрешить выбирать несколько вариантов в карточке">
+              <input type="checkbox" checked={newMultiple} onChange={(e) => setNewMultiple(e.target.checked)} />
+              <span>Несколько</span>
+            </label>
+          )}
           <button className="btn primary" type="button" disabled={adding || newName.trim() === ''} onClick={() => void add()}>
             Добавить
           </button>

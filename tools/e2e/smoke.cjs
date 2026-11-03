@@ -923,6 +923,63 @@ const ok = (c, m) => { if (!c) throw new Error(m); };
     ok(!d.task_values.some((v) => v.task_id === noLink.id), 'у карточки без ссылки появилось значение');
   });
 
+  await step('AL. множественный выбор: режим при создании, несколько капсул, снятие и сохранение', async () => {
+    await page.locator('.side-item', { hasText: 'Релиз 143' }).click();
+    await page.waitForSelector('.board-toolbar');
+    await page.getByLabel('Свойства карточек').click();
+    await dlg().getByPlaceholder('Название нового свойства').fill('Метки');
+    await dlg().getByLabel('Тип свойства').selectOption('select');
+    const createMulti = dlg().locator('.prop-new-multi input');
+    eq(await createMulti.isChecked(), false, 'по умолчанию режим «несколько» включён');
+    await createMulti.check();
+    await dlg().getByRole('button', { name: 'Добавить', exact: true }).click();
+    const row = dlg().locator('.prop-row', { has: page.locator('input[value="Метки"]') });
+    await row.waitFor();
+    eq(await row.locator('.prop-multi input').isChecked(), true, 'созданное свойство не в режиме «несколько»');
+    await row.getByRole('button', { name: 'Варианты' }).click();
+    for (const o of ['Срочно', 'Блокер']) {
+      await dlg().getByPlaceholder('Новый вариант').fill(o);
+      await page.keyboard.press('Enter');
+      await page.waitForSelector(`.dialog input[value="${o}"]`);
+    }
+    await dlg().getByRole('button', { name: /К свойствам/ }).click();
+    await submit('Готово');
+
+    await openCard('Выйти из системы');
+    const prop = field('Метки');
+    ok(await prop.locator('.pill-select-btn.multi').count() === 1, 'в карточке нет режима нескольких значений');
+    await prop.scrollIntoViewIfNeeded();
+    await page.waitForTimeout(200);
+    await prop.locator('.pill-caret-btn').click();
+    await page.waitForTimeout(300);
+    await page.waitForSelector('.pill-menu');
+    await page.locator('.pill-menu').getByRole('option', { name: 'Срочно', exact: true }).click();
+    await page.locator('.pill-menu').getByRole('option', { name: 'Блокер', exact: true }).click();
+    await page.waitForFunction(() => {
+      const p = window.__db.tables.properties.find((x) => x.name === 'Метки');
+      const v = window.__db.tables.task_values.find((x) => x.property_id === p?.id);
+      return v && v.option_id === null && (v.option_ids ?? []).length === 2;
+    });
+    eq(await prop.locator('.pill-removable').count(), 2, 'выбрано не два варианта');
+    ok(await page.locator('.pill-menu').count() === 1, 'меню закрылось после первого выбора');
+    await page.keyboard.press('Escape');
+    await closeCard();
+
+    await openCard('Выйти из системы');
+    const saved = field('Метки');
+    eq(await saved.locator('.pill-removable').count(), 2, 'после переоткрытия выбор не сохранился');
+    await saved.locator('.pill-removable', { hasText: 'Срочно' }).click();
+    await page.waitForFunction(() => {
+      const p = window.__db.tables.properties.find((x) => x.name === 'Метки');
+      const v = window.__db.tables.task_values.find((x) => x.property_id === p?.id);
+      return v && (v.option_ids ?? []).length === 1;
+    });
+    eq(await saved.locator('.pill-removable').count(), 1, 'вариант не убрался');
+    await closeCard();
+    const chips = await page.locator('.task-slot', { hasText: 'Выйти из системы' }).first().locator('.pill').allInnerTexts();
+    ok(chips.includes('Блокер') && !chips.includes('Срочно'), 'на карточке неверные капсулы: ' + chips.join('|'));
+  });
+
   await step('Z. после перезагрузки: пользовательская тема, боковая панель и адрес раздела запоминаются', async () => {
     await page.getByLabel('Тема интерфейса').first().click();
     await dlg().getByRole('radio', { name: 'Пользовательская' }).click();

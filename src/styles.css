@@ -170,7 +170,7 @@ textarea.field { resize: vertical; font: inherit; }
 }
 
 .prop-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
-.prop-row { display: grid; grid-template-columns: 24px minmax(0, 1fr) 150px 92px 32px 32px; align-items: center; gap: 8px; }
+.prop-row { display: grid; grid-template-columns: 24px minmax(0, 1fr) 132px 104px 92px 32px 32px; align-items: center; gap: 8px; }
 .prop-row.archived { grid-template-columns: minmax(0, 1fr) 150px auto auto; padding: 3px 0; }
 .prop-row .field { min-width: 0; }
 .prop-row.dragging { opacity: .5; }
@@ -181,9 +181,13 @@ textarea.field { resize: vertical; font: inherit; }
 .drag-handle:hover { color: var(--text); background: var(--panel2); }
 .type-badge { justify-self: stretch; text-align: center; padding: 4px 8px; border-radius: 999px; font-size: 11px; color: var(--muted); background: var(--panel2); }
 .icon-btn.off { opacity: .55; }
-.prop-add { display: flex; gap: 8px; margin-top: 4px; }
+.prop-add { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
 .prop-add .field:first-child { flex: 1; min-width: 0; }
 .prop-add select.field { width: auto; flex: 0 0 auto; }
+.prop-multi { display: flex; align-items: center; gap: 4px; min-width: 0; font-size: 11px; color: var(--muted); white-space: nowrap; cursor: pointer; }
+.prop-multi input, .prop-new-multi input { margin: 0; }
+.prop-multi:hover { color: var(--text); }
+.prop-new-multi { flex: 0 0 auto; padding: 0; font-size: 12px; white-space: nowrap; }
 .archived { margin-top: 12px; color: var(--muted); }
 .archived summary { cursor: pointer; margin-bottom: 6px; }
 .archived-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
