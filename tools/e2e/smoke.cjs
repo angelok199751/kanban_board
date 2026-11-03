@@ -6,8 +6,16 @@ const DIST = path.join(__dirname, 'dist', 'index.html');
 const OUT = fs.mkdtempSync(path.join(os.tmpdir(), 'qaflow-e2e-'));
 const results = []; const problems = [];
 async function step(name, fn) {
-  try { await fn(); results.push(['PASS', name]); }
-  catch (e) { results.push(['FAIL', name + ' :: ' + String(e.message).split('\n').slice(0, 3).join(' ⏎ ').slice(0, 400)]); }
+  console.log('▶ ' + name);
+  try {
+    await fn();
+    results.push(['PASS', name]);
+    console.log('  PASS');
+  } catch (e) {
+    const fail = name + ' :: ' + String(e.message).split('\n').slice(0, 3).join(' ⏎ ').slice(0, 400);
+    results.push(['FAIL', fail]);
+    console.log('  FAIL ' + fail);
+  }
 }
 const eq = (a, b, m) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(`${m}: ${JSON.stringify(a)} != ${JSON.stringify(b)}`); };
 const ok = (c, m) => { if (!c) throw new Error(m); };
@@ -89,7 +97,7 @@ const ok = (c, m) => { if (!c) throw new Error(m); };
       await page.keyboard.press('Enter');
       await page.waitForSelector(`.dialog input[value="${o}"]`);
     }
-    await submit('Готово'); // варианты
+    await dlg().getByRole('button', { name: /К свойствам/ }).click();
     await submit('Готово'); // свойства
   });
 
@@ -408,7 +416,8 @@ const ok = (c, m) => { if (!c) throw new Error(m); };
 
   // ---------------- меню карточки
   await step('O1. меню карточки: Esc, клик вне, карточка не открывается', async () => {
-    const title = 'Войти в систему (новое)';
+    // первая карточка была удалена навсегда в шаге N2 — меню проверяем на живой карточке
+    const title = 'Выйти из системы';
     const card = page.locator('.task-slot', { hasText: title }).first();
     await card.hover();
     await card.getByRole('button', { name: /Действия с карточкой/ }).click();
@@ -453,7 +462,7 @@ const ok = (c, m) => { if (!c) throw new Error(m); };
     eq(await page.locator('.dialog').count(), 0, 'перенос открыл карточку');
   });
   await step('O3. меню карточки: копия с названием и значениями, затем в корзину', async () => {
-    const title = 'Войти в систему (новое)';
+    const title = 'Выйти из системы';
     const before = await db();
     const orig = before.tasks.find((x) => x.title === title);
     const origValues = before.task_values.filter((v) => v.task_id === orig.id);
@@ -612,7 +621,8 @@ const ok = (c, m) => { if (!c) throw new Error(m); };
     await dlg().getByRole('button', { name: 'Удалить и очистить значения' }).click();
     await page.waitForSelector('.dialog input[value="Анна"]', { state: 'detached' });
     ok(!(await db()).task_values.some((v) => v.option_id), 'значения варианта не очищены');
-    await submit('Готово'); await submit('Готово');
+    await dlg().getByRole('button', { name: /К свойствам/ }).click();
+    await submit('Готово'); // свойства
   });
   await step('W. переименование и цвет колонки', async () => {
     await col('Готово').getByLabel('Настроить колонку').click();
@@ -690,7 +700,8 @@ const ok = (c, m) => { if (!c) throw new Error(m); };
     eq(new Set(rows.map((r) => r.labelX)).size, 1, 'названия в разных столбцах: ' + JSON.stringify(rows.map((r) => r.labelX)));
     eq(new Set(rows.map((r) => r.controlX)).size, 1, 'значения начинаются по-разному: ' + JSON.stringify(rows.map((r) => r.controlX)));
     eq(new Set(rows.map((r) => r.controlR)).size, 1, 'значения заканчиваются по-разному');
-    ok(rows.every((r) => r.h >= 38 && r.h <= 48), 'высоты строк разные: ' + JSON.stringify(rows.map((r) => r.h)));
+    // после уплотнения полей строка занимает около 36 px, но остаётся одного размера
+    ok(rows.every((r) => r.h >= 30 && r.h <= 44), 'высоты строк разные: ' + JSON.stringify(rows.map((r) => r.h)));
     await shot('card-properties-grid-dark');
     await closeCard();
   });
@@ -811,12 +822,18 @@ const ok = (c, m) => { if (!c) throw new Error(m); };
     await page.locator('#boardName').fill('Релиз шаблон');
     await submit('Сохранить');
     await page.waitForSelector('.toast:has-text("Шаблон сохранён")');
-    const t = (await db()).board_templates[0];
+    const saved = await db();
+    const release = saved.boards.find((b) => b.name === 'Релиз 143');
+    const byPos = (a, b) => (a.position < b.position ? -1 : a.position > b.position ? 1 : 0);
+    const cols = saved.board_columns.filter((c) => c.board_id === release.id && c.archived_at === null).sort(byPos).map((c) => c.name);
+    const props = saved.properties.filter((p) => p.board_id === release.id && p.archived_at === null).sort(byPos);
+    const options = saved.property_options.filter((o) => o.property_id === props[0].id).sort(byPos).map((o) => o.label);
+    const t = saved.board_templates[0];
     eq(t.name, 'Релиз шаблон', 'название шаблона');
-    eq(t.structure.columns.map((c) => c.name), ['Новые', 'В работе', 'Готово'], 'колонки и их порядок');
-    eq(t.structure.properties.map((p) => p.name), ['Исполнитель', 'Срок', 'Ссылка'], 'свойства и их порядок');
+    eq(t.structure.columns.map((c) => c.name), cols, 'колонки и их порядок');
+    eq(t.structure.properties.map((p) => p.name), props.map((p) => p.name), 'свойства и их порядок');
     ok(!('tasks' in t.structure) && !('values' in t.structure), 'в шаблон попали карточки или значения');
-    ok(t.structure.properties[0].options.length === 2, 'варианты списка не сохранились');
+    eq(t.structure.properties[0].options.map((o) => o.label), options, 'варианты списка не сохранились');
   });
   await step('AJ. шаблон: создать доску, применить к существующей, переименовать и удалить', async () => {
     await page.getByRole('button', { name: 'Шаблоны', exact: true }).click();
@@ -843,20 +860,24 @@ const ok = (c, m) => { if (!c) throw new Error(m); };
     await page.waitForSelector('.template-card');
     await card().getByRole('button', { name: 'Применить', exact: true }).click();
     await dlg().getByLabel('Доска').selectOption({ label: 'Релиз 143' });
+    const beforeApply = await db();
+    const release = beforeApply.boards.find((b) => b.name === 'Релиз 143');
+    const oldCols = beforeApply.board_columns.filter((c) => c.board_id === release.id && c.archived_at === null).map((c) => c.name);
+    const oldProps = beforeApply.properties.filter((p) => p.board_id === release.id && p.archived_at === null).map((p) => p.name);
     await submit('Применить');
     await page.waitForSelector('.toast:has-text("Шаблон применён к доске «Релиз 143»")');
     await page.locator('.side-item', { hasText: 'Релиз 143' }).click();
     await page.waitForSelector('.column h3:text-is("Новые (2)")');
     eq(await page.locator('.column').count(), 6, 'применение шаблона добавило колонки в конец');
-    const release = (await db()).boards.find((b) => b.name === 'Релиз 143');
+    const withCopy = (names) => [...names, ...names.map((n) => n + ' (2)')].sort();
     eq(
       (await db()).board_columns.filter((c) => c.board_id === release.id && c.archived_at === null).map((c) => c.name).sort(),
-      ['В работе', 'В работе (2)', 'Готово', 'Готово (2)', 'Новые', 'Новые (2)'],
+      withCopy(oldCols),
       'имена колонок с суффиксами',
     );
     eq(
       (await db()).properties.filter((p) => p.board_id === release.id && p.archived_at === null).map((p) => p.name).sort(),
-      ['Исполнитель', 'Исполнитель (2)', 'Срок', 'Срок (2)', 'Ссылка', 'Ссылка (2)'],
+      withCopy(oldProps),
       'имена свойств с суффиксами',
     );
 
@@ -876,10 +897,10 @@ const ok = (c, m) => { if (!c) throw new Error(m); };
   await step('AK. импорт карточек: название и ссылка, свойство создаётся на месте', async () => {
     await page.locator('.side-item', { hasText: 'Релиз 143' }).click();
     await page.waitForSelector('.board-toolbar');
-    await page.waitForSelector('.column h3:text-is("Готово")');
+    await page.waitForSelector('.column h3:text-is("Сделано")');
     const before = (await db()).tasks.filter((t) => !t.deleted_at && !t.archived_at).length;
     await page.getByRole('button', { name: 'Импорт карточек' }).click();
-    await dlg().getByLabel('Куда добавлять').selectOption({ label: 'Готово' });
+    await dlg().getByLabel('Куда добавлять').selectOption({ label: 'Сделано' });
     await dlg()
       .getByLabel('Таблица из Excel')
       .fill('Название\tСсылка на задачу\nРегресс входа\thttps://example.test/regress\nИмпорт без ссылки');
