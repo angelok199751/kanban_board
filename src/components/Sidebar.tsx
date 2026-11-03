@@ -1,5 +1,5 @@
 import type { Board, KnowledgeBase } from '../lib/types';
-import { IconTrash } from './Icons';
+import { IconTemplate, IconTrash } from './Icons';
 
 export function Sidebar({
   boards,
@@ -7,24 +7,28 @@ export function Sidebar({
   bases,
   currentBaseId,
   archiveActive,
+  templatesActive,
   collapsed,
   onSelect,
   onCreate,
   onSelectBase,
   onCreateBase,
   onArchive,
+  onTemplates,
 }: {
   boards: Board[];
   currentId: string | null;
   bases: KnowledgeBase[];
   currentBaseId: string | null;
   archiveActive: boolean;
+  templatesActive: boolean;
   collapsed: boolean;
   onSelect: (id: string) => void;
   onCreate: () => void;
   onSelectBase: (id: string) => void;
   onCreateBase: () => void;
   onArchive: () => void;
+  onTemplates: () => void;
 }) {
   return (
     <aside id="app-sidebar" className="sidebar" aria-label="Навигация" aria-hidden={collapsed || undefined}>
@@ -73,6 +77,20 @@ export function Sidebar({
             {b.name}
           </button>
         ))}
+      </nav>
+
+      <div className="sidebar-section-head">
+        <span>Ещё</span>
+      </div>
+      <nav className="sidebar-list">
+        <button
+          type="button"
+          className={templatesActive ? 'side-item active with-icon' : 'side-item with-icon'}
+          onClick={onTemplates}
+        >
+          <IconTemplate />
+          <span>Шаблоны</span>
+        </button>
       </nav>
 
       <div className="sidebar-footer">

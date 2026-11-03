@@ -2,6 +2,7 @@ import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-quer
 import { humanizeError } from '../../lib/supabase';
 import { useNotice } from '../../lib/notice';
 import { compareByPosition, keyBetween, planMove } from '../../lib/positions';
+import { cleanTemplateName, structureFromBoard, uniqueName, type BoardTemplate, type BoardTemplateStructure } from '../../lib/templates';
 import type { Board, BoardData, ColorName, KnowledgeArticle, KnowledgeBase, Property, PropertyType, SavedView, Task, TaskValue } from '../../lib/types';
 import { copyValueInputs, selectedOptionIds } from '../../lib/values';
 import * as api from './api';
@@ -36,6 +37,10 @@ export function useArticles(baseId: string) {
 }
 
 export const viewsKey = (boardId: string) => ['views', boardId] as const;
+
+export function useTemplates() {
+  return useQuery({ queryKey: ['templates'] as const, queryFn: api.listBoardTemplates });
+}
 
 export function useViews(boardId: string) {
   return useQuery({ queryKey: viewsKey(boardId), queryFn: () => api.listViews(boardId) });
@@ -99,6 +104,101 @@ export function useActions() {
       description: description.trim() === '' ? null : description.trim(),
     });
     await qc.invalidateQueries({ queryKey: qk.boards });
+  }
+
+  // ------------------------------------------------------------ шаблоны
+  /**
+   * Добавляет структуру шаблона в конец доски. Существующие колонки и свойства не трогаются:
+   * совпадающие названия получают суффикс «(2)», «(3)» и так далее, а порядок берётся из шаблона.
+   * Карточки и значения свойств не переносятся.
+   */
+  async function applyStructure(boardId: string, structure: BoardTemplateStructure) {
+    try {
+      const data = await api.getBoardData(boardId);
+      const activeColumns = data.columns.filter((c) => c.archived_at === null).sort(compareByPosition);
+      const activeProperties = data.properties.filter((p) => p.archived_at === null).sort(compareByPosition);
+
+      let columnPosition = lastPosition(activeColumns);
+      const columnNames = new Set(activeColumns.map((c) => c.name.trim().toLowerCase()));
+      for (const column of structure.columns) {
+        const name = uniqueName(column.name, columnNames);
+        columnNames.add(name.toLowerCase());
+        columnPosition = keyBetween(columnPosition, null);
+        await api.createColumn({ board_id: boardId, name, color: column.color, position: columnPosition });
+      }
+
+      let propertyPosition = lastPosition(activeProperties);
+      const propertyNames = new Set(activeProperties.map((p) => p.name.trim().toLowerCase()));
+      for (const property of structure.properties) {
+        const name = uniqueName(property.name, propertyNames);
+        propertyNames.add(name.toLowerCase());
+        propertyPosition = keyBetween(propertyPosition, null);
+        const created = await api.createProperty({
+          board_id: boardId,
+          name,
+          type: property.type,
+          multiple: property.type === 'select' ? property.multiple : false,
+          position: propertyPosition,
+        });
+
+        let optionPosition: string | null = null;
+        for (const option of property.options) {
+          optionPosition = keyBetween(optionPosition, null);
+          await api.createOption({
+            property_id: created.id,
+            label: option.label,
+            color: option.color,
+            position: optionPosition,
+          });
+        }
+      }
+    } finally {
+      await refresh(boardId);
+    }
+  }
+
+  /** Создаёт доску и наполняет её структурой шаблона. Карточки в шаблон не входят. */
+  async function createBoardFromTemplate(template: BoardTemplate, name: string) {
+    const boards = qc.getQueryData<{ position: string; id: string }[]>(qk.boards) ?? [];
+    const created = await api.createBoard({
+      name: name.trim(),
+      description: null,
+      position: keyBetween(lastPosition(boards), null),
+    });
+    qc.setQueryData<Board[]>(qk.boards, (old) => [...(old ?? []), created]);
+    try {
+      await applyStructure(created.id, template.structure);
+    } catch (e) {
+      notify(`Доска создана, но шаблон применился не полностью: ${messageOf(e)}`);
+    }
+    await qc.invalidateQueries({ queryKey: qk.boards });
+    return created;
+  }
+
+  /** Применяет шаблон к существующей доске: новые колонки и свойства добавляются в конец. */
+  async function applyTemplate(boardId: string, template: BoardTemplate) {
+    await applyStructure(boardId, template.structure);
+    await qc.invalidateQueries({ queryKey: qk.boards });
+  }
+
+  async function saveBoardTemplate(boardId: string, name: string, data?: BoardData) {
+    const snapshot = structureFromBoard(data ?? (await api.getBoardData(boardId)));
+    const created = await api.createBoardTemplate({
+      name: cleanTemplateName(name),
+      structure: snapshot,
+    });
+    await qc.invalidateQueries({ queryKey: ['templates'] });
+    return created;
+  }
+
+  async function renameTemplate(id: string, name: string) {
+    await api.updateBoardTemplate(id, { name: cleanTemplateName(name) });
+    await qc.invalidateQueries({ queryKey: ['templates'] });
+  }
+
+  async function deleteTemplate(id: string) {
+    await api.deleteBoardTemplate(id);
+    await qc.invalidateQueries({ queryKey: ['templates'] });
   }
 
   // ------------------------------------------------------------ колонки
@@ -528,6 +628,11 @@ export function useActions() {
   return {
     createBoard,
     renameBoard,
+    applyTemplate,
+    createBoardFromTemplate,
+    saveBoardTemplate,
+    renameTemplate,
+    deleteTemplate,
     createColumn,
     updateColumn,
     moveColumn,

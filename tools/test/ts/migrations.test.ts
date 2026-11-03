@@ -11,7 +11,7 @@ if (files.length === 0) throw new Error('миграции не найдены');
 const sql = files.map((f) => readFileSync(join(dir, f), 'utf-8')).join('\n').replace(/--[^\n]*/g, '');
 
 const tables = [...sql.matchAll(/create\s+table\s+public\.(\w+)/gi)].map((m) => m[1]);
-if (tables.length < 10) throw new Error(`ожидалось не меньше 10 таблиц, найдено ${tables.length}`);
+if (tables.length < 11) throw new Error(`ожидалось не меньше 11 таблиц, найдено ${tables.length}`);
 
 const problems: string[] = [];
 const rlsEnabled = new Set([...sql.matchAll(/alter\s+table\s+public\.(\w+)\s+enable\s+row\s+level\s+security/gi)].map((m) => m[1]));

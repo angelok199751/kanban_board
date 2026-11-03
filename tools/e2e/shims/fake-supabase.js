@@ -3,7 +3,7 @@ const now = () => new Date().toISOString();
 const uid = () => crypto.randomUUID();
 const ME = { id: 'u-an', email: 'an@qaflow.test' };
 
-const TABLES = ['members', 'boards', 'board_columns', 'properties', 'property_options', 'tasks', 'task_values', 'views', 'knowledge_bases', 'knowledge_articles'];
+const TABLES = ['members', 'boards', 'board_columns', 'properties', 'property_options', 'tasks', 'task_values', 'views', 'knowledge_bases', 'knowledge_articles', 'board_templates'];
 const db = { tables: Object.fromEntries(TABLES.map((t) => [t, []])), handlers: [], session: { user: ME }, authListeners: [], user: ME.id };
 db.tables.members.push({ user_id: ME.id, display_name: 'Ан', role: 'admin', is_active: true });
 db.tables.members.push({ user_id: 'u-anna', display_name: 'Анна', role: 'member', is_active: true });
@@ -84,6 +84,11 @@ function insertRow(table, input) {
       if ((row.labels || []).length > 20) throw err('23514', 'check constraint');
       Object.assign(row, { content_html: row.content_html ?? '', labels: row.labels ?? [], version: 1, deleted_at: null, created_at: ts, updated_at: ts });
       row.search_text = stripTags(row.content_html);
+      break;
+    case 'board_templates':
+      if (!row.name || !row.name.trim()) throw err('23514', 'new row violates check constraint');
+      if (typeof row.structure !== 'object' || row.structure === null || Array.isArray(row.structure)) throw err('23514', 'structure must be an object');
+      Object.assign(row, { created_at: ts, updated_at: ts });
       break;
   }
   db.tables[table].push(row);

@@ -802,6 +802,77 @@ const ok = (c, m) => { if (!c) throw new Error(m); };
   });
 
 
+  await step('AI. шаблон сохраняет только структуру доски', async () => {
+    await page.locator('.side-item', { hasText: 'Релиз 143' }).click();
+    await page.waitForSelector('.board-toolbar');
+    await page.waitForSelector('.task-slot');
+    await page.getByRole('button', { name: 'Сохранить как шаблон' }).click();
+    eq(await page.locator('#boardName').inputValue(), 'Релиз 143', 'шаблон по умолчанию называется как доска');
+    await page.locator('#boardName').fill('Релиз шаблон');
+    await submit('Сохранить');
+    await page.waitForSelector('.toast:has-text("Шаблон сохранён")');
+    const t = (await db()).board_templates[0];
+    eq(t.name, 'Релиз шаблон', 'название шаблона');
+    eq(t.structure.columns.map((c) => c.name), ['Новые', 'В работе', 'Готово'], 'колонки и их порядок');
+    eq(t.structure.properties.map((p) => p.name), ['Исполнитель', 'Срок', 'Ссылка'], 'свойства и их порядок');
+    ok(!('tasks' in t.structure) && !('values' in t.structure), 'в шаблон попали карточки или значения');
+    ok(t.structure.properties[0].options.length === 2, 'варианты списка не сохранились');
+  });
+  await step('AJ. шаблон: создать доску, применить к существующей, переименовать и удалить', async () => {
+    await page.getByRole('button', { name: 'Шаблоны', exact: true }).click();
+    await page.waitForSelector('h1.board-title:has-text("Шаблоны")');
+    await page.waitForSelector('.template-card:has-text("Релиз шаблон")');
+    const card = () => page.locator('.template-card').first();
+    ok((await card().innerText()).includes('3 колонки'), 'нет сводки по колонкам');
+    ok((await card().innerText()).includes('3 свойства'), 'нет сводки по свойствам');
+
+    await card().getByRole('button', { name: 'Создать доску' }).click();
+    eq(await page.locator('#boardName').inputValue(), 'Релиз шаблон', 'имя новой доски из шаблона');
+    await page.locator('#boardName').fill('Из шаблона');
+    await submit('Создать');
+    await page.waitForSelector('h1.board-title:has-text("Из шаблона")');
+    await page.waitForSelector('.column h3:text-is("Новые")');
+    eq(await page.locator('.column').count(), 3, 'колонки новой доски');
+    eq(await page.locator('.task-slot').count(), 0, 'в новой доске появились карточки');
+    const created = (await db()).boards.find((b) => b.name === 'Из шаблона');
+    ok(created, 'доска не создана');
+    eq((await db()).board_columns.filter((c) => c.board_id === created.id).length, 3, 'колонки в базе');
+    eq((await db()).properties.filter((p) => p.board_id === created.id).length, 3, 'свойства в базе');
+
+    await page.getByRole('button', { name: 'Шаблоны', exact: true }).click();
+    await page.waitForSelector('.template-card');
+    await card().getByRole('button', { name: 'Применить', exact: true }).click();
+    await dlg().getByLabel('Доска').selectOption({ label: 'Релиз 143' });
+    await submit('Применить');
+    await page.waitForSelector('.toast:has-text("Шаблон применён к доске «Релиз 143»")');
+    await page.locator('.side-item', { hasText: 'Релиз 143' }).click();
+    await page.waitForSelector('.column h3:text-is("Новые (2)")');
+    eq(await page.locator('.column').count(), 6, 'применение шаблона добавило колонки в конец');
+    const release = (await db()).boards.find((b) => b.name === 'Релиз 143');
+    eq(
+      (await db()).board_columns.filter((c) => c.board_id === release.id && c.archived_at === null).map((c) => c.name).sort(),
+      ['В работе', 'В работе (2)', 'Готово', 'Готово (2)', 'Новые', 'Новые (2)'],
+      'имена колонок с суффиксами',
+    );
+    eq(
+      (await db()).properties.filter((p) => p.board_id === release.id && p.archived_at === null).map((p) => p.name).sort(),
+      ['Исполнитель', 'Исполнитель (2)', 'Срок', 'Срок (2)', 'Ссылка', 'Ссылка (2)'],
+      'имена свойств с суффиксами',
+    );
+
+    await page.getByRole('button', { name: 'Шаблоны', exact: true }).click();
+    await page.waitForSelector('.template-card');
+    await card().getByRole('button', { name: 'Переименовать' }).click();
+    await page.locator('#boardName').fill('Шаблон релиза');
+    await submit('Сохранить');
+    await page.waitForSelector('.template-card:has-text("Шаблон релиза")');
+    await card().getByRole('button', { name: 'Удалить' }).click();
+    await submit('Удалить шаблон');
+    await page.waitForSelector('.toast:has-text("Шаблон удалён")');
+    eq((await db()).board_templates.length, 0, 'шаблон не удалён');
+    ok((await db()).boards.some((b) => b.name === 'Из шаблона'), 'удаление шаблона затронуло доску');
+  });
+
   await step('Z. после перезагрузки: пользовательская тема, боковая панель и адрес раздела запоминаются', async () => {
     await page.getByLabel('Тема интерфейса').first().click();
     await dlg().getByRole('radio', { name: 'Пользовательская' }).click();

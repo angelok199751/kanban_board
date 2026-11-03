@@ -36,6 +36,7 @@ import { useDebounced } from '../lib/useDebounced';
 import { countActiveFilters, isShownOnCard, matchesFilters, sortTasks, type ViewContext } from '../lib/viewConfig';
 import { ColumnDialog } from './ColumnDialog';
 import { ColumnView } from './ColumnView';
+import { BoardDialog } from './BoardDialog';
 import { ConfirmDialog } from './ConfirmDialog';
 import { ExportDialog } from './ExportDialog';
 import { FieldsDialog } from './FieldsDialog';
@@ -60,6 +61,7 @@ type DialogState =
   | { kind: 'fields' }
   | { kind: 'saveView' }
   | { kind: 'manageView'; view: SavedView }
+  | { kind: 'saveTemplate' }
   | null;
 
 const cloneOrder = (o: Order): Order => {
@@ -447,6 +449,15 @@ export function BoardView({ board, boards }: { board: Board; boards: Board[] }) 
         <button className="btn small" type="button" title="Экспорт в Excel или CSV" aria-label="Экспорт" onClick={() => setDialog({ kind: 'export' })}>
           ⇩<span className="btn-label"> Экспорт</span>
         </button>
+        <button
+          className="btn small"
+          type="button"
+          title="Сохранить структуру доски как шаблон (без карточек)"
+          aria-label="Сохранить как шаблон"
+          onClick={() => setDialog({ kind: 'saveTemplate' })}
+        >
+          Шаблон
+        </button>
         <span className="muted small-text counter" title="Карточек на доске (без архива и корзины)">
           {visibleTasks.length === tasks.length
             ? `Карточек: ${tasks.length}`
@@ -602,6 +613,19 @@ export function BoardView({ board, boards }: { board: Board; boards: Board[] }) 
         />
       )}
       {dialog?.kind === 'saveView' && <SaveViewDialog onSubmit={saveViewAs} onClose={() => setDialog(null)} />}
+      {dialog?.kind === 'saveTemplate' && (
+        <BoardDialog
+          title="Сохранить как шаблон"
+          submitLabel="Сохранить"
+          withDescription={false}
+          initialName={board.name}
+          onSubmit={async (name) => {
+            await actions.saveBoardTemplate(board.id, name, query.data);
+            notify('Шаблон сохранён');
+          }}
+          onClose={() => setDialog(null)}
+        />
+      )}
       {dialog?.kind === 'manageView' && (
         <ManageViewDialog
           view={dialog.view}

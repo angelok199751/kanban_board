@@ -8,6 +8,7 @@ eq(staleKeysFor('task_values'), ['board'], 'values');
 eq(staleKeysFor('views'), ['views'], 'views');
 eq(staleKeysFor('knowledge_articles'), ['kb-articles', 'archive'], 'articles');
 eq(staleKeysFor('knowledge_bases'), ['kb-bases', 'archive'], 'bases');
+eq(staleKeysFor('board_templates'), ['templates'], 'templates');
 eq(staleKeysFor('unknown'), [], 'unknown table');
 // каждая синхронизируемая таблица должна что-то обновлять, иначе подписка бесполезна
 for (const t of SYNCED_TABLES) if (staleKeysFor(t).length === 0) throw new Error(`table ${t} has no stale keys`);

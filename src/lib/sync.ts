@@ -9,6 +9,7 @@ export const SYNCED_TABLES = [
   'views',
   'knowledge_bases',
   'knowledge_articles',
+  'board_templates',
 ] as const;
 
 /**
@@ -33,6 +34,8 @@ export function staleKeysFor(table: string): string[] {
       return ['kb-bases', 'archive'];
     case 'knowledge_articles':
       return ['kb-articles', 'archive'];
+    case 'board_templates':
+      return ['templates'];
     default:
       return [];
   }

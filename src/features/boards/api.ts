@@ -1,6 +1,7 @@
 import type { ArchiveData, ArchiveTask } from '../../lib/archive';
 import { likePattern } from '../../lib/search';
 import { supabase } from '../../lib/supabase';
+import { normalizeStructure, type BoardTemplate, type BoardTemplateStructure } from '../../lib/templates';
 import type {
   Board,
   BoardData,
@@ -36,6 +37,7 @@ export class ValueConflictError extends Error {
 }
 
 const BOARD_FIELDS = 'id, name, description, position, archived_at';
+const TEMPLATE_FIELDS = 'id, name, structure, created_at, updated_at';
 const COLUMN_FIELDS = 'id, board_id, name, color, position, archived_at';
 const TASK_FIELDS = 'id, board_id, column_id, number, title, position, version, archived_at, deleted_at';
 const PROPERTY_FIELDS = 'id, board_id, name, type, multiple, position, hidden, archived_at';
@@ -80,6 +82,52 @@ export function updateBoard(
   patch: { name?: string; description?: string | null; archived_at?: string | null },
 ): Promise<Board> {
   return run<Board>(supabase.from('boards').update(patch).eq('id', id).select(BOARD_FIELDS).single());
+}
+
+// ---------------------------------------------------------------- шаблоны
+
+const asTemplate = (row: BoardTemplate): BoardTemplate => ({
+  ...row,
+  structure: normalizeStructure(row.structure),
+});
+
+export async function listBoardTemplates(): Promise<BoardTemplate[]> {
+  const rows = await run<BoardTemplate[]>(
+    supabase.from('board_templates').select(TEMPLATE_FIELDS).order('name'),
+  );
+  return rows.map(asTemplate);
+}
+
+export async function createBoardTemplate(input: {
+  name: string;
+  structure: BoardTemplateStructure;
+}): Promise<BoardTemplate> {
+  const row = await run<BoardTemplate>(
+    supabase
+      .from('board_templates')
+      .insert({ name: input.name.trim(), structure: normalizeStructure(input.structure) })
+      .select(TEMPLATE_FIELDS)
+      .single(),
+  );
+  return asTemplate(row);
+}
+
+export async function updateBoardTemplate(
+  id: string,
+  patch: { name?: string; structure?: BoardTemplateStructure },
+): Promise<BoardTemplate> {
+  const next =
+    patch.structure === undefined
+      ? { ...patch, name: patch.name?.trim() }
+      : { ...patch, name: patch.name?.trim(), structure: normalizeStructure(patch.structure) };
+  const row = await run<BoardTemplate>(
+    supabase.from('board_templates').update(next).eq('id', id).select(TEMPLATE_FIELDS).single(),
+  );
+  return asTemplate(row);
+}
+
+export async function deleteBoardTemplate(id: string): Promise<void> {
+  await run<unknown[]>(supabase.from('board_templates').delete().eq('id', id).select('id'));
 }
 
 // ---------------------------------------------------------------- содержимое доски

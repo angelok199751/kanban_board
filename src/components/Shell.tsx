@@ -13,6 +13,7 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { KnowledgeView } from './KnowledgeView';
 import { IconArchive } from './Icons';
 import { Sidebar } from './Sidebar';
+import { TemplatesView } from './TemplatesView';
 import { ThemeDialog } from './ThemeDialog';
 
 type ShellDialog =
@@ -57,8 +58,9 @@ export function Shell({ member }: { member: Member }) {
   const actions = useActions();
   const syncStatus = useRealtimeSync();
   const theme = useTheme();
-  const { route, toBoard: go, toKnowledge, toArchive } = useRoute();
+  const { route, toBoard: go, toKnowledge, toArchive, toTemplates } = useRoute();
   const inArchive = route.kind === 'archive';
+  const inTemplates = route.kind === 'templates';
   const [collapsed, setCollapsed] = useState<boolean>(readCollapsed);
   const [dialog, setDialog] = useState<ShellDialog>(null);
 
@@ -88,6 +90,8 @@ export function Shell({ member }: { member: Member }) {
   let content;
   if (inArchive) {
     content = <ArchiveView />;
+  } else if (inTemplates) {
+    content = <TemplatesView onOpenBoard={go} />;
   } else if (route.kind === 'kb') {
     content = currentBase ? (
       <KnowledgeView key={currentBase.id} base={currentBase} />
@@ -121,7 +125,15 @@ export function Shell({ member }: { member: Member }) {
     );
   }
 
-  const title = inArchive ? 'Архив и корзина' : currentBase ? currentBase.name : current ? current.name : 'QA Flow';
+  const title = inArchive
+    ? 'Архив и корзина'
+    : inTemplates
+      ? 'Шаблоны'
+      : currentBase
+        ? currentBase.name
+        : current
+          ? current.name
+          : 'QA Flow';
 
   return (
     <div className={collapsed ? 'app-shell collapsed' : 'app-shell'}>
@@ -131,12 +143,14 @@ export function Shell({ member }: { member: Member }) {
         bases={bases}
         currentBaseId={currentBase ? currentBase.id : null}
         archiveActive={inArchive}
+        templatesActive={inTemplates}
         collapsed={collapsed}
         onSelect={go}
         onCreate={() => setDialog('newBoard')}
         onSelectBase={toKnowledge}
         onCreateBase={() => setDialog('newBase')}
         onArchive={toArchive}
+        onTemplates={toTemplates}
       />
 
       <div className="main">

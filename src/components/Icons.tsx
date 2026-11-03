@@ -27,6 +27,16 @@ export function IconTrash({ size = 16 }: IconProps) {
   );
 }
 
+/** Шаблон: два листа со смещением (копия структуры). */
+export function IconTemplate({ size = 16 }: IconProps) {
+  return (
+    <svg {...base(size)}>
+      <rect x="3.5" y="3.5" width="12" height="12" rx="2" />
+      <path d="M8.5 20.5h10a2 2 0 0 0 2-2v-10" />
+    </svg>
+  );
+}
+
 /** Архив: коробка с крышкой. */
 export function IconArchive({ size = 16 }: IconProps) {
   return (
