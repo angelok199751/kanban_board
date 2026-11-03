@@ -3,7 +3,7 @@ import { humanizeError } from '../../lib/supabase';
 import { useNotice } from '../../lib/notice';
 import { compareByPosition, keyBetween, planMove } from '../../lib/positions';
 import type { Board, BoardData, ColorName, KnowledgeArticle, KnowledgeBase, Property, PropertyType, SavedView, Task, TaskValue } from '../../lib/types';
-import { selectedOptionIds } from '../../lib/values';
+import { copyValueInputs, selectedOptionIds } from '../../lib/values';
 import * as api from './api';
 
 export const qk = {
@@ -171,6 +171,38 @@ export function useActions() {
     }));
     if (patch.description_html !== undefined) void qc.invalidateQueries({ queryKey: ['search', boardId] });
     return saved;
+  }
+
+  /**
+   * Копия карточки: новое название то же, значения свойств переносятся, служебные поля
+   * (id, номер, версия, даты) выдаются заново. Копия встаёт сразу после исходной.
+   */
+  async function copyTask(boardId: string, task: Task, values: TaskValue[]) {
+    const inColumn = (boardCache(boardId)?.tasks ?? [])
+      .filter((t) => t.column_id === task.column_id)
+      .sort(compareByPosition);
+    const index = inColumn.findIndex((t) => t.id === task.id);
+    const next = index >= 0 ? inColumn[index + 1] : undefined;
+    let position: string;
+    try {
+      position = keyBetween(task.position, next?.position ?? null);
+    } catch {
+      position = keyBetween(lastPosition(inColumn), null);
+    }
+
+    const created = await api.createTask({
+      board_id: boardId,
+      column_id: task.column_id,
+      title: task.title,
+      position,
+    });
+
+    try {
+      await Promise.all(copyValueInputs(created.id, values).map((v) => api.upsertValue(v)));
+    } finally {
+      await refresh(boardId);
+    }
+    return created;
   }
 
   /** orderedIds: карточки целевой колонки в новом порядке (включая переносимую). */
@@ -486,6 +518,7 @@ export function useActions() {
     moveColumn,
     createTask,
     saveTask,
+    copyTask,
     moveTask,
     createProperty,
     renameProperty,

@@ -400,6 +400,26 @@ select.field.small { width: auto; padding: 6px 10px; font-size: 12px; }
 .task:hover .task-open { opacity: 1; }
 .task-title { font-size: 13px; font-weight: 650; overflow-wrap: anywhere; white-space: pre-wrap; }
 .task-meta { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.task-actions { display: flex; align-items: center; gap: 4px; margin: -3px -4px -3px 0; }
+.task-menu-btn { width: 22px; height: 22px; padding: 0; font-size: 15px; line-height: 1; opacity: .55; }
+.task:hover .task-menu-btn, .task-menu-btn:focus-visible, .task-menu-btn[aria-expanded="true"] { opacity: 1; }
+.task-menu {
+  position: fixed; z-index: 95; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; padding: 5px;
+  border: 1px solid var(--editor-border); border-radius: 12px; background: var(--panel); box-shadow: 0 14px 40px var(--shadow);
+  animation: editor-in .12s ease-out;
+}
+.task-menu-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 9px; border: 0; border-radius: 8px;
+  color: var(--text); background: transparent; font: inherit; font-size: 13px; text-align: left; cursor: pointer;
+}
+.task-menu-item:hover, .task-menu-item:focus-visible { background: var(--hover); outline: none; }
+.task-menu-item:disabled { opacity: .45; cursor: default; }
+.task-menu-item.danger { color: var(--error-text); }
+.task-menu-arrow { margin-left: auto; color: var(--muted); }
+.task-menu-sep { height: 1px; margin: 3px 4px; background: var(--border); }
+.task-menu-label { padding: 3px 9px 5px; color: var(--muted); font-size: 11px; }
+.task-menu-empty { padding: 5px 9px 7px; color: var(--muted); font-size: 12px; }
+.task-menu-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .task.compact { padding: 8px 11px; }
 .task.compact .task-top { margin-bottom: 3px; }
 .task.compact .task-title {

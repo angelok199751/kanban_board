@@ -34,7 +34,13 @@ function insertRow(table, input) {
       if (!['select', 'text', 'url', 'date'].includes(row.type)) throw err('23514', 'check constraint');
       if (t.properties.some((p) => p.board_id === row.board_id && p.archived_at === null && p.name.trim().toLowerCase() === row.name.trim().toLowerCase()))
         throw err('23505', 'duplicate key value violates unique constraint "properties_name_uniq"');
-      Object.assign(row, { hidden: row.hidden ?? false, archived_at: null, created_at: ts, updated_at: ts });
+      Object.assign(row, {
+        multiple: row.type === 'select' ? (row.multiple ?? false) : false,
+        hidden: row.hidden ?? false,
+        archived_at: null,
+        created_at: ts,
+        updated_at: ts,
+      });
       break;
     case 'property_options': {
       const p = t.properties.find((x) => x.id === row.property_id);
@@ -59,7 +65,13 @@ function insertRow(table, input) {
       validateValue(row);
       if (t.task_values.some((v) => v.task_id === row.task_id && v.property_id === row.property_id))
         throw err('23505', 'duplicate key value violates unique constraint "task_values_pkey"');
-      Object.assign(row, { value_text: row.value_text ?? null, value_date: row.value_date ?? null, option_id: row.option_id ?? null, updated_at: ts });
+      Object.assign(row, {
+        value_text: row.value_text ?? null,
+        value_date: row.value_date ?? null,
+        option_id: row.option_id ?? null,
+        option_ids: row.option_ids ?? [],
+        updated_at: ts,
+      });
       break;
     case 'views':
       Object.assign(row, { owner_id: row.owner_id ?? null, config: row.config ?? {}, created_at: ts, updated_at: ts });
@@ -85,16 +97,25 @@ function validateValue(row) {
   const prop = t.properties.find((x) => x.id === row.property_id);
   if (!task || !prop || task.board_id !== prop.board_id) throw err('23514', 'Свойство не принадлежит доске этой задачи');
   if (prop.type === 'select') {
-    const o = t.property_options.find((x) => x.id === row.option_id);
-    if (!row.option_id || row.value_text != null || row.value_date != null) throw err('23514', 'Для списка нужен ровно один выбранный вариант');
-    if (!o || o.property_id !== prop.id) throw err('23514', 'Вариант не принадлежит этому свойству');
+    if (row.value_text != null || row.value_date != null) throw err('23514', 'Для списка нужны только выбранные варианты');
+    if (prop.multiple) {
+      const ids = row.option_ids ?? [];
+      if (row.option_id != null || ids.length === 0) throw err('23514', 'Для списка с несколькими значениями нужен хотя бы один вариант');
+      if (new Set(ids).size !== ids.length) throw err('23514', 'Варианты списка не должны повторяться');
+      const owned = t.property_options.filter((x) => x.property_id === prop.id && ids.includes(x.id));
+      if (owned.length !== ids.length) throw err('23514', 'Вариант не принадлежит этому свойству');
+    } else {
+      const o = t.property_options.find((x) => x.id === row.option_id);
+      if (!row.option_id || (row.option_ids ?? []).length !== 0) throw err('23514', 'Для списка нужен ровно один выбранный вариант');
+      if (!o || o.property_id !== prop.id) throw err('23514', 'Вариант не принадлежит этому свойству');
+    }
   } else if (prop.type === 'text') {
-    if (row.value_text == null || !row.value_text.trim() || row.value_date != null || row.option_id != null) throw err('23514', 'Для текстового свойства нужен непустой текст');
+    if (row.value_text == null || !row.value_text.trim() || row.value_date != null || row.option_id != null || (row.option_ids ?? []).length !== 0) throw err('23514', 'Для текстового свойства нужен непустой текст');
   } else if (prop.type === 'url') {
-    if (row.value_text == null || row.value_date != null || row.option_id != null) throw err('23514', 'Для ссылки нужен URL');
+    if (row.value_text == null || row.value_date != null || row.option_id != null || (row.option_ids ?? []).length !== 0) throw err('23514', 'Для ссылки нужен URL');
     if (!/^https?:\/\/[^\s/$.?#][^\s]*$/i.test(row.value_text)) throw err('23514', 'Некорректная ссылка: нужен адрес вида https://...');
   } else if (prop.type === 'date') {
-    if (row.value_date == null || row.value_text != null || row.option_id != null) throw err('23514', 'Для даты нужна дата');
+    if (row.value_date == null || row.value_text != null || row.option_id != null || (row.option_ids ?? []).length !== 0) throw err('23514', 'Для даты нужна дата');
   }
 }
 
@@ -138,7 +159,8 @@ function canDelete(table, row) {
 function removeRow(table, row) {
   const t = db.tables;
   if (table === 'board_columns' && t.tasks.some((x) => x.column_id === row.id)) throw err('23503', 'violates foreign key constraint');
-  if (table === 'property_options' && t.task_values.some((v) => v.option_id === row.id)) throw err('23503', 'violates foreign key constraint "task_values_option_id_fkey"');
+  if (table === 'property_options' && t.task_values.some((v) => v.option_id === row.id || (v.option_ids ?? []).includes(row.id)))
+    throw err('23503', 'violates foreign key constraint "task_values_option_id_fkey"');
   const drop = (name, pred) => { t[name] = t[name].filter((r) => !pred(r)); };
   if (table === 'boards') {
     const props = t.properties.filter((p) => p.board_id === row.id).map((p) => p.id);
@@ -313,6 +335,37 @@ const rpcs = {
     t.deleted_at = null; t.version++;
     const c = db.tables.board_columns.find((x) => x.id === t.column_id); if (c && c.archived_at) t.archived_at = t.archived_at ?? now();
     notify('tasks', 'UPDATE', t);
+  },
+  clear_option_values({ p_option_id }) {
+    const option = db.tables.property_options.find((x) => x.id === p_option_id);
+    if (!option) return;
+    const keep = [];
+    for (const v of db.tables.task_values) {
+      if (v.property_id !== option.property_id) { keep.push(v); continue; }
+      if (v.option_id === p_option_id) continue;
+      if (!(v.option_ids ?? []).includes(p_option_id)) { keep.push(v); continue; }
+      const ids = v.option_ids.filter((id) => id !== p_option_id);
+      if (ids.length === 0) continue;
+      v.option_ids = ids; v.updated_at = now(); keep.push(v);
+    }
+    db.tables.task_values = keep;
+  },
+  set_property_multiple({ p_property_id, p_multiple }) {
+    const p = db.tables.properties.find((x) => x.id === p_property_id);
+    if (!p) throw err('P0002', 'Свойство не найдено');
+    if (p.type !== 'select') throw err('23514', 'Несколько значений бывает только у свойства-списка');
+    p.multiple = p_multiple;
+    for (const v of db.tables.task_values) {
+      if (v.property_id !== p_property_id) continue;
+      if (p_multiple && v.option_id !== null) {
+        v.option_ids = [v.option_id];
+        v.option_id = null;
+      } else if (!p_multiple && v.option_id === null && (v.option_ids ?? []).length > 0) {
+        v.option_id = v.option_ids[0];
+        v.option_ids = [];
+      }
+      v.updated_at = now();
+    }
   },
 };
 

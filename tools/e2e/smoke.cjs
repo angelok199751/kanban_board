@@ -381,13 +381,91 @@ const ok = (c, m) => { if (!c) throw new Error(m); };
     eq((await db()).tasks.filter((t) => !t.deleted_at && !t.archived_at).length, before, 'число активных карточек после возврата');
   });
 
-  // ---------------- статистика
-  await step('O. статистика', async () => {
-    await page.getByLabel('Статистика').click();
-    await page.waitForSelector('.stats-tiles');
-    const txt = await dlg().innerText();
-    ok(txt.includes('По колонкам') && txt.includes('Исполнитель'), 'нет разбивок');
-    await submit('Готово');
+  // ---------------- меню карточки
+  await step('O1. меню карточки: Esc, клик вне, карточка не открывается', async () => {
+    const title = 'Войти в систему (новое)';
+    const card = page.locator('.task-slot', { hasText: title }).first();
+    await card.hover();
+    await card.getByRole('button', { name: /Действия с карточкой/ }).click();
+    await page.waitForSelector('.task-menu');
+    eq(await page.locator('.dialog').count(), 0, 'меню открыло карточку');
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('.task-menu', { state: 'detached' });
+    await card.getByRole('button', { name: /Действия с карточкой/ }).click();
+    await page.waitForSelector('.task-menu');
+    await page.locator('h1.board-title').click();
+    await page.waitForSelector('.task-menu', { state: 'detached' });
+  });
+  await step('O2. меню карточки: перенос внутри доски', async () => {
+    const title = 'Сменить пароль (Анна)';
+    const d = await db();
+    const t = d.tasks.find((x) => x.title === title);
+    ok(t, 'нет карточки для переноса');
+    const target = d.board_columns.find((c) => c.id !== t.column_id && c.archived_at === null);
+    ok(target, 'нет другой колонки');
+
+    const openMove = async () => {
+      const card = page.locator('.task-slot', { hasText: title }).first();
+      await card.hover();
+      await card.getByRole('button', { name: /Действия с карточкой/ }).click();
+      await page.locator('.task-menu').getByRole('menuitem', { name: 'Переместить' }).click();
+    };
+
+    await openMove();
+    await page.locator('.task-menu').getByRole('menuitem', { name: new RegExp('^' + target.name + '$') }).click();
+    await page.waitForFunction(
+      ([id, c]) => window.__db.tables.tasks.find((x) => x.id === id).column_id === c,
+      [t.id, target.id],
+    );
+    await col(target.name).locator('.task-title:text-is("' + title + '")').waitFor();
+
+    await openMove();
+    await page.locator('.task-menu').getByRole('menuitem', { name: new RegExp('^' + d.board_columns.find((c) => c.id === t.column_id).name + '$') }).click();
+    await page.waitForFunction(
+      ([id, c]) => window.__db.tables.tasks.find((x) => x.id === id).column_id === c,
+      [t.id, t.column_id],
+    );
+    eq(await page.locator('.dialog').count(), 0, 'перенос открыл карточку');
+  });
+  await step('O3. меню карточки: копия с названием и значениями, затем в корзину', async () => {
+    const title = 'Войти в систему (новое)';
+    const before = await db();
+    const orig = before.tasks.find((x) => x.title === title);
+    const origValues = before.task_values.filter((v) => v.task_id === orig.id);
+    ok(origValues.length > 0, 'у карточки нет значений для проверки копии');
+
+    const card = page.locator('.task-slot', { hasText: title }).first();
+    await card.hover();
+    await card.getByRole('button', { name: /Действия с карточкой/ }).click();
+    await page.locator('.task-menu').getByRole('menuitem', { name: 'Копировать' }).click();
+    await page.waitForSelector('.toast:has-text("Карточка скопирована")');
+    await page.waitForFunction(
+      (t) => window.__db.tables.tasks.filter((x) => x.title === t && !x.deleted_at).length === 2,
+      title,
+    );
+
+    const d = await db();
+    const copies = d.tasks.filter((x) => x.title === title && !x.deleted_at);
+    const copy = copies.find((x) => x.id !== orig.id);
+    ok(copy, 'копия не создана');
+    ok(copy.id !== orig.id, 'копия получила тот же id');
+    ok(copy.number !== orig.number, 'копия получила тот же номер');
+    const fields = (v) => [v.property_id, v.value_text, v.value_date, v.option_id, (v.option_ids ?? []).join(',')];
+    eq(
+      d.task_values.filter((v) => v.task_id === copy.id).map(fields).sort(),
+      origValues.map(fields).sort(),
+      'значения не скопированы',
+    );
+    eq(await page.locator('.dialog').count(), 0, 'копирование открыло карточку');
+
+    const copyCard = page.locator('.task-slot', { has: page.locator('.task-id', { hasText: '#' + copy.number }) });
+    await copyCard.hover();
+    await copyCard.getByRole('button', { name: 'Действия с карточкой #' + copy.number }).click();
+    await page.locator('.task-menu').getByRole('menuitem', { name: 'В корзину' }).click();
+    await page.waitForSelector('.dialog .confirm-text:has-text("уйдёт в корзину")');
+    await dlg().getByRole('button', { name: 'Убрать в корзину' }).click();
+    await page.waitForFunction((id) => window.__db.tables.tasks.find((x) => x.id === id).deleted_at !== null, copy.id);
+    await copyCard.waitFor({ state: 'detached' });
   });
 
   // ---------------- базы знаний

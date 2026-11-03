@@ -53,6 +53,7 @@ type DialogState =
   | { kind: 'editColumn'; column: Column }
   | { kind: 'archiveColumn'; column: Column }
   | { kind: 'task'; task: Task }
+  | { kind: 'trashTask'; task: Task }
   | { kind: 'properties' }
   | { kind: 'filters' }
   | { kind: 'export' }
@@ -327,6 +328,21 @@ export function BoardView({ board, boards }: { board: Board; boards: Board[] }) 
     setDragOrder(null);
   }
 
+  /** Перенос из меню карточки: только внутри этой доски, в конец выбранной колонки. */
+  function moveTaskToColumn(task: Task, columnId: string) {
+    if (columnId === task.column_id) return;
+    const orderedIds = [...(fullOrder[columnId] ?? []).filter((id) => id !== task.id), task.id];
+    void actions.moveTask(board.id, task.id, columnId, orderedIds);
+  }
+
+  function copyTask(task: Task) {
+    const values = Array.from(valuesByTask.get(task.id)?.values() ?? []);
+    void actions
+      .copyTask(board.id, task, values)
+      .then(() => notify('Карточка скопирована'))
+      .catch((e) => notify(`Не удалось скопировать карточку: ${errText(e)}`));
+  }
+
   // ------------------------------------------------------------ представления
   async function saveActiveView() {
     if (!view.activeView) return;
@@ -457,6 +473,7 @@ export function BoardView({ board, boards }: { board: Board; boards: Board[] }) 
                 <ColumnView
                   key={c.id}
                   column={c}
+                  columns={columns}
                   tasks={tasksOf(c.id)}
                   fieldsOf={fieldsOf}
                   compact={config.compact}
@@ -465,6 +482,9 @@ export function BoardView({ board, boards }: { board: Board; boards: Board[] }) 
                   onAddTask={(title) => actions.createTask(board.id, c.id, title)}
                   onEdit={() => setDialog({ kind: 'editColumn', column: c })}
                   onOpenTask={(task) => setDialog({ kind: 'task', task })}
+                  onMoveTask={moveTaskToColumn}
+                  onCopyTask={copyTask}
+                  onDeleteTask={(task) => setDialog({ kind: 'trashTask', task })}
                 />
               ))}
               <button className="add-column" type="button" onClick={() => setDialog({ kind: 'newColumn' })}>
@@ -519,6 +539,20 @@ export function BoardView({ board, boards }: { board: Board; boards: Board[] }) 
           Колонка «{dialog.column.name}» уйдёт в архив вместе со своими карточками (сейчас на доске в ней{' '}
           {(fullOrder[dialog.column.id] ?? []).length} {plural((fullOrder[dialog.column.id] ?? []).length, 'карточка', 'карточки', 'карточек')}).
           Ничего не удаляется: колонку и эти карточки можно вернуть в разделе «Архив и корзина».
+        </ConfirmDialog>
+      )}
+      {dialog?.kind === 'trashTask' && (
+        <ConfirmDialog
+          title="Удалить карточку?"
+          confirmLabel="Убрать в корзину"
+          onConfirm={async () => {
+            await actions.trashTask(dialog.task.id);
+            notify('Карточка убрана в корзину');
+          }}
+          onClose={() => setDialog(null)}
+        >
+          Карточка #{dialog.task.number} «{dialog.task.title}» уйдёт в корзину. Оттуда её можно восстановить в разделе
+          «Архив и корзина», пока не удалишь насовсем.
         </ConfirmDialog>
       )}
       {dialog?.kind === 'task' && (

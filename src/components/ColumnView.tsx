@@ -66,6 +66,7 @@ function AddTask({ onAdd }: { onAdd: (title: string) => Promise<void> }) {
 
 export function ColumnView({
   column,
+  columns,
   tasks,
   fieldsOf,
   compact,
@@ -74,8 +75,12 @@ export function ColumnView({
   onAddTask,
   onEdit,
   onOpenTask,
+  onMoveTask,
+  onCopyTask,
+  onDeleteTask,
 }: {
   column: Column;
+  columns: Column[];
   tasks: Task[];
   fieldsOf: (taskId: string) => CardField[];
   compact: boolean;
@@ -84,6 +89,9 @@ export function ColumnView({
   onAddTask: (title: string) => Promise<void>;
   onEdit: () => void;
   onOpenTask: (task: Task) => void;
+  onMoveTask: (task: Task, columnId: string) => void;
+  onCopyTask: (task: Task) => void;
+  onDeleteTask: (task: Task) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: columnDndId(column.id),
@@ -123,7 +131,17 @@ export function ColumnView({
       <SortableContext items={tasks.map((t) => taskDndId(t.id))} strategy={verticalListSortingStrategy}>
         <div className="cards">
           {tasks.map((t) => (
-            <SortableTaskCard key={t.id} task={t} fields={fieldsOf(t.id)} compact={compact} onOpen={onOpenTask} />
+            <SortableTaskCard
+              key={t.id}
+              task={t}
+              fields={fieldsOf(t.id)}
+              compact={compact}
+              columns={columns}
+              onOpen={onOpenTask}
+              onMove={onMoveTask}
+              onCopy={onCopyTask}
+              onDelete={onDeleteTask}
+            />
           ))}
         </div>
       </SortableContext>
