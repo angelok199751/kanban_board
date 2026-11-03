@@ -133,6 +133,31 @@ const ok = (c, m) => { if (!c) throw new Error(m); };
     ok(chips.some((x) => x.includes('example.com')), 'нет ссылки: ' + chips.join('|'));
     ok(chips.some((x) => x.includes('01.03.2026')), 'нет даты: ' + chips.join('|'));
   });
+  await step('E3b. редактор: жирный текст и вставка простым текстом', async () => {
+    await openCard('Войти в систему');
+    const rich = page.locator('.rich-field').last();
+    await rich.click();
+    await page.keyboard.press('Control+End');
+    await page.keyboard.press('Control+b');
+    await page.keyboard.type(' важное');
+    await page.keyboard.press('Control+b');
+    // вставляем «богатый» HTML: разметка не должна попасть в описание, а ссылка — стать ссылкой
+    await page.evaluate(() => {
+      const el = document.querySelector('.dialog .rich-field');
+      const dt = new DataTransfer();
+      dt.setData('text/plain', ' вставка https://example.org/step');
+      dt.setData('text/html', '<b>чужой HTML</b>');
+      el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    });
+    await page.waitForFunction(() => {
+      const html = window.__db.tables.tasks.find((x) => x.title === 'Войти в систему')?.description_html ?? '';
+      return /<(strong|b)>[^<]*важное/.test(html)
+        && html.includes('href="https://example.org/step"')
+        && !html.includes('чужой HTML');
+    }, null, { timeout: 5000 });
+    await page.waitForSelector('.save-status:has-text("Все изменения сохранены")', { timeout: 5000 });
+    await closeCard();
+  });
 
 
   const shots = process.env.SHOTS;
@@ -314,9 +339,14 @@ const ok = (c, m) => { if (!c) throw new Error(m); };
     await openCard('Выйти из системы');
     const d = await db(); const t = d.tasks.find((x) => x.title === 'Выйти из системы');
     const p = d.properties.find((x) => x.name === 'Заметка');
-    await page.evaluate(([tid, pid]) => window.__other.insert('task_values', { task_id: tid, property_id: pid, value_text: 'заметка Анны' }), [t.id, p.id]);
+    // печатаем, затем меняем значение «снаружи» и сразу выходим из поля: realtime не должен
+    // успеть подставить чужое значение до сохранения, иначе конфликта (правильно) не возникнет
     await field('Заметка').locator('input').fill('моя заметка');
-    await field('Заметка').locator('input').blur();
+    await page.waitForTimeout(50);
+    await page.evaluate(([tid, pid]) => {
+      window.__other.insert('task_values', { task_id: tid, property_id: pid, value_text: 'заметка Анны' });
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    }, [t.id, p.id]);
     await page.waitForSelector('.conflict:has-text("Это значение уже изменил другой участник")');
     await field('Заметка').getByRole('button', { name: 'Оставить моё' }).click();
     await page.waitForSelector('.save-status:has-text("Все изменения сохранены")');
