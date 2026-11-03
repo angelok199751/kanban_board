@@ -256,6 +256,46 @@ select.field.small { width: auto; padding: 6px 10px; font-size: 12px; }
   color: var(--ok-text); background: var(--ok-bg); border: 1px solid var(--ok-border);
 }
 
+/* ---------- экспорт: иерархия, отступы и адаптивность ---------- */
+.dialog.export-dialog { max-width: 760px; }
+.export-dialog .export-section { margin-top: 12px; }
+.export-dialog .export-section:first-of-type { margin-top: 8px; }
+.export-intro { margin: 0 0 2px; line-height: 1.5; max-width: 62ch; }
+.export-card { padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg); }
+.export-section-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; margin-bottom: 10px; }
+.export-section-title { display: flex; flex-direction: column; gap: 1px; flex: 1 1 auto; min-width: 0; }
+.export-section-title .label { margin-top: 0; color: var(--text); font-size: 13px; font-weight: 650; }
+.export-section-title .small-note { margin: 0; }
+.export-step {
+  display: grid; place-items: center; flex: 0 0 auto;
+  width: 22px; height: 22px; border-radius: 50%;
+  color: var(--on-accent); background: var(--accent); font-size: 11px; font-weight: 750;
+}
+.export-pill {
+  flex: 0 0 auto; max-width: 100%; padding: 3px 9px; border-radius: 999px;
+  color: var(--muted); background: var(--panel2); font-size: 11px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.export-checks { display: flex; flex-direction: column; gap: 1px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
+.export-fields-head { align-items: flex-start; gap: 10px; margin-bottom: 10px; }
+.export-fields-head .row { margin: 0; flex: 0 0 auto; }
+.export-field-row { padding: 5px 9px; }
+.export-field-row:hover { outline: 1px solid var(--border); }
+.export-fields { max-height: 260px; }
+.export-summary { margin-top: 12px; line-height: 1.55; }
+.export-summary-fields { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.export-summary-chip {
+  padding: 2px 7px; border-radius: 999px; font-size: 11px;
+  color: var(--muted); background: var(--panel); border: 1px solid var(--border);
+}
+.export-actions { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+@media (max-width: 620px) {
+  .export-dialog .export-fields-head { flex-direction: column; align-items: stretch; }
+  .export-dialog .export-fields-head .row { justify-content: flex-start; flex-wrap: wrap; }
+  .export-dialog .export-actions .btn { flex: 1 1 auto; }
+  .export-dialog .export-fields { max-height: 220px; }
+}
+
 /* ---------- этап 9: импорт карточек ---------- */
 .import-form { gap: 8px; }
 .import-text { min-height: 130px; line-height: 1.5; }

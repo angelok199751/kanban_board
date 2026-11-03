@@ -117,9 +117,23 @@ export function ExportDialog({
   }
 
   return (
-    <Dialog title="Экспорт" wide onClose={onClose}>
-      <div className="export-section">
-        <div className="label">Что выгружать</div>
+    <Dialog title="Экспорт" wide extraClass="export-dialog" onClose={onClose}>
+      <p className="export-intro muted small-text">
+        Файл собирается из актуальных данных базы в момент скачивания. Ниже — только настройки выгрузки.
+      </p>
+
+      <section className="export-section export-card">
+        <div className="export-section-head">
+          <span className="export-step" aria-hidden="true">
+            1
+          </span>
+          <div className="export-section-title">
+            <div className="label">Что выгружать</div>
+            <div className="muted small-note">Доска и колонка</div>
+          </div>
+          <span className="export-pill">{columnName ?? 'Все колонки'}</span>
+        </div>
+
         <div className="export-grid">
           <label className="small-text muted">
             Доска
@@ -144,28 +158,35 @@ export function ExportDialog({
           </label>
         </div>
 
-        <label className={filtersAvailable ? 'check-line' : 'check-line disabled'}>
-          <input type="checkbox" checked={useFilters} disabled={!filtersAvailable} onChange={(e) => setOnlyFiltered(e.target.checked)} />
-          Только карточки по текущим фильтрам и поиску
-        </label>
+        <div className="export-checks">
+          <label className={filtersAvailable ? 'check-line' : 'check-line disabled'}>
+            <input type="checkbox" checked={useFilters} disabled={!filtersAvailable} onChange={(e) => setOnlyFiltered(e.target.checked)} />
+            Только карточки по текущим фильтрам и поиску
+          </label>
+          <label className="check-line">
+            <input type="checkbox" checked={includeArchived} onChange={(e) => setIncludeArchived(e.target.checked)} />
+            Включить архивные карточки
+          </label>
+          <label className="check-line">
+            <input type="checkbox" checked={includeDeleted} onChange={(e) => setIncludeDeleted(e.target.checked)} />
+            Включить удалённые карточки (корзина)
+          </label>
+        </div>
         {!filtersAvailable && (
           <div className="muted small-note">
             {boardId === currentBoardId ? 'Сейчас фильтры и поиск не заданы: выгрузятся все карточки области.' : 'Фильтры относятся к открытой доске.'}
           </div>
         )}
-        <label className="check-line">
-          <input type="checkbox" checked={includeArchived} onChange={(e) => setIncludeArchived(e.target.checked)} />
-          Включить архивные карточки
-        </label>
-        <label className="check-line">
-          <input type="checkbox" checked={includeDeleted} onChange={(e) => setIncludeDeleted(e.target.checked)} />
-          Включить удалённые карточки (корзина)
-        </label>
-      </div>
+      </section>
 
-      <div className="export-section">
+      <section className="export-section export-card">
         <div className="export-fields-head">
-          <div className="label">Столбцы и их порядок</div>
+          <div className="export-section-title">
+            <div className="label">Столбцы и их порядок</div>
+            <div className="muted small-note">
+              Выбрано {selected.length} из {rows.length}
+            </div>
+          </div>
           <div className="row">
             <button type="button" className="btn small" onClick={() => setAll(true)}>
               Выбрать все
@@ -191,10 +212,20 @@ export function ExportDialog({
             </div>
           ))}
         </div>
-      </div>
+      </section>
 
-      <div className="export-section">
-        <div className="label">Формат</div>
+      <section className="export-section export-card">
+        <div className="export-section-head">
+          <span className="export-step" aria-hidden="true">
+            2
+          </span>
+          <div className="export-section-title">
+            <div className="label">Формат</div>
+            <div className="muted small-note">Excel удобнее для дат и списков, CSV — для обмена</div>
+          </div>
+          <span className="export-pill">{format.toUpperCase()}</span>
+        </div>
+
         <div className="export-grid">
           <label className="small-text muted">
             Файл
@@ -217,14 +248,22 @@ export function ExportDialog({
           Даты в Excel записываются настоящими датами, в CSV как ГГГГ-ММ-ДД. Выпадающие списки выгружаются названием варианта,
           ссылки адресом.
         </div>
-      </div>
+      </section>
 
       <div className="export-summary" role="status">
         <strong>Будет выгружено:</strong> доска «{board?.name ?? '—'}», {columnName ? `колонка «${columnName}»` : 'все колонки'},
         {useFilters ? ' только по текущим фильтрам и поиску,' : ' все карточки области,'}
         {includeArchived ? ' с архивными,' : ''}
         {includeDeleted ? ' с удалёнными,' : ''} {selected.length} {plural(selected.length, 'столбец', 'столбца', 'столбцов')}.
-        {selected.length > 0 && <span className="muted"> ({selected.map((r) => r.field.label).join(' → ')})</span>}
+        {selected.length > 0 && (
+          <div className="export-summary-fields">
+            {selected.map((r) => (
+              <span key={r.field.id} className="export-summary-chip">
+                {r.field.label}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       {error && (
@@ -238,7 +277,7 @@ export function ExportDialog({
         </div>
       )}
 
-      <div className="row end">
+      <div className="row end export-actions">
         <button className="btn" type="button" onClick={onClose}>
           Закрыть
         </button>
