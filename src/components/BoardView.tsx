@@ -41,6 +41,7 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { ExportDialog } from './ExportDialog';
 import { FieldsDialog } from './FieldsDialog';
 import { FiltersDialog } from './FiltersDialog';
+import { ImportDialog } from './ImportDialog';
 import { PropertiesDialog } from './PropertiesDialog';
 import { TaskCardView } from './TaskCard';
 import { TaskDialog } from './TaskDialog';
@@ -62,6 +63,7 @@ type DialogState =
   | { kind: 'saveView' }
   | { kind: 'manageView'; view: SavedView }
   | { kind: 'saveTemplate' }
+  | { kind: 'import' }
   | null;
 
 const cloneOrder = (o: Order): Order => {
@@ -446,6 +448,15 @@ export function BoardView({ board, boards }: { board: Board; boards: Board[] }) 
         <button className="btn small" type="button" title="Свойства карточек" aria-label="Свойства карточек" onClick={() => setDialog({ kind: 'properties' })}>
           ⚙<span className="btn-label"> Свойства</span>
         </button>
+        <button
+          className="btn small"
+          type="button"
+          title="Импорт карточек из таблицы Excel"
+          aria-label="Импорт карточек"
+          onClick={() => setDialog({ kind: 'import' })}
+        >
+          ⇧<span className="btn-label"> Импорт</span>
+        </button>
         <button className="btn small" type="button" title="Экспорт в Excel или CSV" aria-label="Экспорт" onClick={() => setDialog({ kind: 'export' })}>
           ⇩<span className="btn-label"> Экспорт</span>
         </button>
@@ -609,6 +620,14 @@ export function BoardView({ board, boards }: { board: Board; boards: Board[] }) 
           currentBoardId={board.id}
           config={config}
           search={debouncedSearch}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog?.kind === 'import' && (
+        <ImportDialog
+          columns={columns}
+          properties={activeProperties}
+          onImport={(columnId, rows, options) => actions.importTasks(board.id, columnId, rows, options)}
           onClose={() => setDialog(null)}
         />
       )}

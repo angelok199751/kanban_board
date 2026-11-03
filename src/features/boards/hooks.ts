@@ -2,6 +2,7 @@ import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-quer
 import { humanizeError } from '../../lib/supabase';
 import { useNotice } from '../../lib/notice';
 import { compareByPosition, keyBetween, planMove } from '../../lib/positions';
+import { TASK_LINK_PROPERTY, type ImportOptions, type ImportResult, type ImportRow } from '../../lib/importTasks';
 import { cleanTemplateName, structureFromBoard, uniqueName, type BoardTemplate, type BoardTemplateStructure } from '../../lib/templates';
 import type { Board, BoardData, ColorName, KnowledgeArticle, KnowledgeBase, Property, PropertyType, SavedView, Task, TaskValue } from '../../lib/types';
 import { copyValueInputs, selectedOptionIds } from '../../lib/values';
@@ -252,6 +253,78 @@ export function useActions() {
       position: keyBetween(lastPosition(inColumn), null),
     });
     await refresh(boardId);
+  }
+
+  /**
+   * Массовый импорт карточек в колонку. Название становится названием карточки,
+   * ссылка (вторая колонка таблицы) сохраняется в свойство «Ссылка на задачу».
+   * Если свойства нет, его можно создать на месте. Если оно есть, но не типа «Ссылка»,
+   * карточки создаются без ссылок: диалог предупреждает об этом заранее.
+   */
+  async function importTasks(
+    boardId: string,
+    columnId: string,
+    rows: ImportRow[],
+    options: ImportOptions = {},
+  ): Promise<ImportResult> {
+    const data = await api.getBoardData(boardId);
+    const activeProperties = data.properties.filter((p) => p.archived_at === null).sort(compareByPosition);
+    const named = activeProperties.find((p) => p.name.trim().toLowerCase() === TASK_LINK_PROPERTY.toLowerCase());
+
+    let linkProperty = named?.type === 'url' ? named : null;
+    let linkPropertyCreated = false;
+    if (!named && options.createLinkProperty) {
+      linkProperty = await api.createProperty({
+        board_id: boardId,
+        name: TASK_LINK_PROPERTY,
+        type: 'url',
+        multiple: false,
+        position: keyBetween(lastPosition(activeProperties), null),
+      });
+      linkPropertyCreated = true;
+    }
+
+    let position = lastPosition(data.tasks.filter((t) => t.column_id === columnId));
+    let created = 0;
+    let linked = 0;
+    let invalidLinks = 0;
+    try {
+      for (const row of rows) {
+        position = keyBetween(position, null);
+        const task = await api.createTask({
+          board_id: boardId,
+          column_id: columnId,
+          title: row.title,
+          position,
+        });
+        created += 1;
+
+        if (!linkProperty || row.link === '') continue;
+        if (row.invalidLink) {
+          invalidLinks += 1;
+          continue;
+        }
+        await api.upsertValue({
+          task_id: task.id,
+          property_id: linkProperty.id,
+          value_text: row.link,
+          value_date: null,
+          option_id: null,
+          option_ids: [],
+        });
+        linked += 1;
+      }
+    } finally {
+      await refresh(boardId);
+    }
+
+    return {
+      created,
+      linked,
+      invalidLinks,
+      linkPropertyCreated,
+      linksSaved: linkProperty !== null,
+    };
   }
 
   /**
@@ -637,6 +710,7 @@ export function useActions() {
     updateColumn,
     moveColumn,
     createTask,
+    importTasks,
     saveTask,
     copyTask,
     moveTask,

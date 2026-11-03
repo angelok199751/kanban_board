@@ -873,6 +873,35 @@ const ok = (c, m) => { if (!c) throw new Error(m); };
     ok((await db()).boards.some((b) => b.name === 'Из шаблона'), 'удаление шаблона затронуло доску');
   });
 
+  await step('AK. импорт карточек: название и ссылка, свойство создаётся на месте', async () => {
+    await page.locator('.side-item', { hasText: 'Релиз 143' }).click();
+    await page.waitForSelector('.board-toolbar');
+    await page.waitForSelector('.column h3:text-is("Готово")');
+    const before = (await db()).tasks.filter((t) => !t.deleted_at && !t.archived_at).length;
+    await page.getByRole('button', { name: 'Импорт карточек' }).click();
+    await dlg().getByLabel('Куда добавлять').selectOption({ label: 'Готово' });
+    await dlg()
+      .getByLabel('Таблица из Excel')
+      .fill('Название\tСсылка на задачу\nРегресс входа\thttps://example.test/regress\nИмпорт без ссылки');
+    ok(await dlg().getByRole('checkbox', { name: /Создать свойство/ }).isChecked(), 'свойство создаётся не по умолчанию');
+    ok((await dlg().innerText()).includes('Будет создано карточек: 2'), 'нет сводки перед импортом');
+    await dlg().getByRole('button', { name: /^Импортировать/ }).click();
+    await page.waitForSelector('.toast:has-text("Импортировано карточек: 2")');
+    await page.waitForSelector('.task-title:text-is("Регресс входа")');
+    const d = await db();
+    eq(d.tasks.filter((t) => !t.deleted_at && !t.archived_at).length, before + 2, 'создано карточек');
+    const prop = d.properties.find((p) => p.name === 'Ссылка на задачу' && p.type === 'url');
+    ok(prop, 'свойство «Ссылка на задачу» не создано');
+    const regression = d.tasks.find((t) => t.title === 'Регресс входа');
+    const noLink = d.tasks.find((t) => t.title === 'Импорт без ссылки');
+    eq(
+      d.task_values.find((v) => v.task_id === regression.id && v.property_id === prop.id)?.value_text,
+      'https://example.test/regress',
+      'ссылка сохранена в свойство',
+    );
+    ok(!d.task_values.some((v) => v.task_id === noLink.id), 'у карточки без ссылки появилось значение');
+  });
+
   await step('Z. после перезагрузки: пользовательская тема, боковая панель и адрес раздела запоминаются', async () => {
     await page.getByLabel('Тема интерфейса').first().click();
     await dlg().getByRole('radio', { name: 'Пользовательская' }).click();
