@@ -364,6 +364,31 @@ const ok = (c, m) => { if (!c) throw new Error(m); };
     await confirm.click();
     await page.waitForFunction((id) => !window.__db.tables.tasks.some((x) => x.id === id), t.id);
   });
+  await step('N2b. массовое восстановление карточек из корзины', async () => {
+    const d = await db();
+    const two = d.tasks.filter((x) => !x.deleted_at).slice(0, 2);
+    eq(two.length, 2, 'недостаточно карточек для массового действия');
+    const labels = two.map((x) => `#${x.number} ${x.title}`);
+    await page.evaluate((ids) => {
+      ids.forEach((id) => {
+        window.__db.tables.tasks.find((x) => x.id === id).deleted_at = new Date().toISOString();
+        window.__other.update('tasks', id, {});
+      });
+    }, two.map((x) => x.id));
+    await page.getByRole('tab', { name: /Корзина/ }).click();
+    const rowFor = (label) => page.locator('.archive-row', { hasText: label });
+    await rowFor(labels[0]).locator('.archive-check').check();
+    await rowFor(labels[1]).locator('.archive-check').check();
+    await page.waitForSelector('.archive-bulk:has-text("Выбрано: 2")');
+    await page.locator('.archive-bulk').getByRole('button', { name: 'Восстановить' }).click();
+    await page.waitForFunction(
+      (ids) => ids.every((id) => window.__db.tables.tasks.find((x) => x.id === id).deleted_at === null),
+      two.map((x) => x.id),
+    );
+    await rowFor(labels[0]).waitFor({ state: 'detached' });
+    await rowFor(labels[1]).waitFor({ state: 'detached' });
+    eq(await page.locator('.archive-bulk').count(), 0, 'панель массовых действий не закрылась');
+  });
   await step('N3. колонка в архив вместе с карточками и возврат', async () => {
     await page.locator('.side-item', { hasText: 'Релиз 143' }).click();
     await page.waitForSelector('.column');

@@ -436,6 +436,21 @@ export function useActions() {
   const restoreTask = (id: string) => archiveOp(() => api.restoreTask(id));
   const restoreTaskFromTrash = (id: string) => archiveOp(() => api.restoreTaskFromTrash(id));
   const deleteTaskForever = (id: string) => archiveOp(() => api.deleteTaskForever(id));
+
+  /**
+   * Массовые действия над карточками. Каждая карточка проходит тот же путь, что и одиночная
+   * (trashTask / restoreTask / deleteTaskForever), а обновление данных делается один раз в конце.
+   * Так архив, доска и редактор не расходятся в правилах удаления.
+   */
+  const runTaskBatch = (ids: string[], work: (id: string) => Promise<unknown>) =>
+    archiveOp(async () => {
+      for (const id of ids) await work(id);
+    });
+
+  const trashTasks = (ids: string[]) => runTaskBatch(ids, api.trashTask);
+  const restoreTasks = (ids: string[]) => runTaskBatch(ids, api.restoreTask);
+  const restoreTasksFromTrash = (ids: string[]) => runTaskBatch(ids, api.restoreTaskFromTrash);
+  const deleteTasksForever = (ids: string[]) => runTaskBatch(ids, api.deleteTaskForever);
   const emptyTrash = async (): Promise<number> => {
     try {
       return await api.emptyTrash();
@@ -545,6 +560,10 @@ export function useActions() {
     restoreTask,
     restoreTaskFromTrash,
     deleteTaskForever,
+    trashTasks,
+    restoreTasks,
+    restoreTasksFromTrash,
+    deleteTasksForever,
     emptyTrash,
     createKnowledgeBase,
     renameKnowledgeBase,

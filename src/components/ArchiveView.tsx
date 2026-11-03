@@ -13,7 +13,7 @@ import {
 import { plural } from '../lib/format';
 import { useNotice } from '../lib/notice';
 import { humanizeError } from '../lib/supabase';
-import { DangerConfirmDialog } from './ConfirmDialog';
+import { ConfirmDialog, DangerConfirmDialog } from './ConfirmDialog';
 
 type Tab = 'boards' | 'columns' | 'tasks' | 'trash' | 'knowledge';
 
@@ -21,8 +21,11 @@ type Pending =
   | { kind: 'board'; row: ArchiveRow }
   | { kind: 'column'; row: ArchiveRow }
   | { kind: 'task'; row: ArchiveRow }
+  | { kind: 'trashTask'; row: ArchiveRow }
   | { kind: 'base'; row: ArchiveRow }
   | { kind: 'article'; row: ArchiveRow }
+  | { kind: 'bulkTrash'; ids: string[] }
+  | { kind: 'bulkDelete'; ids: string[] }
   | { kind: 'emptyTrash'; count: number }
   | null;
 
@@ -150,6 +153,12 @@ export function ArchiveView() {
   const [boardFilter, setBoardFilter] = useState('');
   const [pending, setPending] = useState<Pending>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    setSelected(new Set());
+  }, [tab, search, boardFilter]);
 
   const data = query.data;
   const all = useMemo(
@@ -168,6 +177,52 @@ export function ArchiveView() {
 
   const rows = filterRows(all[tab], search, tab === 'boards' || tab === 'knowledge' || boardFilter === '' ? null : boardFilter);
 
+  /** Массовый выбор есть только у карточек: доски, колонки и знания удаляются по одной. */
+  const cardTab = tab === 'tasks' || tab === 'trash';
+  const selectedIds = useMemo(() => rows.filter((r) => selected.has(r.id)).map((r) => r.id), [rows, selected]);
+  const allSelected = rows.length > 0 && selectedIds.length === rows.length;
+
+  function toggleRow(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAll() {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (allSelected) rows.forEach((r) => next.delete(r.id));
+      else rows.forEach((r) => next.add(r.id));
+      return next;
+    });
+  }
+
+  /** Массовое действие без диалога: ошибка показывается уведомлением, выбор сбрасывается в любом случае. */
+  async function runBulk(work: (ids: string[]) => Promise<unknown>, done: (n: number) => string) {
+    if (selectedIds.length === 0) return;
+    const n = selectedIds.length;
+    setBusy(true);
+    try {
+      await work(selectedIds);
+      setSelected(new Set());
+      notify(done(n), 'info');
+    } catch (e) {
+      setSelected(new Set());
+      notify(`Не удалось выполнить действие: ${errText(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const restoreSelected = () =>
+    runBulk(
+      tab === 'trash' ? actions.restoreTasksFromTrash : actions.restoreTasks,
+      (n) => `Восстановлено карточек: ${n}.`,
+    );
+
   async function restore(row: ArchiveRow) {
     setBusyId(row.id);
     try {
@@ -182,6 +237,12 @@ export function ArchiveView() {
       notify(`Не удалось восстановить: ${errText(e)}`);
     } finally {
       setBusyId(null);
+      setSelected((prev) => {
+        if (!prev.has(row.id)) return prev;
+        const next = new Set(prev);
+        next.delete(row.id);
+        return next;
+      });
     }
   }
 
@@ -231,11 +292,42 @@ export function ArchiveView() {
           </select>
         )}
         {tab === 'trash' && all.trash.length > 0 && (
-          <button className="btn small danger" type="button" onClick={() => setPending({ kind: 'emptyTrash', count: all.trash.length })}>
+          <button
+            className="btn small danger"
+            type="button"
+            disabled={busy}
+            onClick={() => setPending({ kind: 'emptyTrash', count: all.trash.length })}
+          >
             Очистить корзину
           </button>
         )}
+        {cardTab && rows.length > 0 && (
+          <label className="check-line archive-select-all">
+            <input type="checkbox" checked={allSelected} onChange={toggleAll} />
+            <span>{allSelected ? 'Снять выбор' : 'Выбрать все'}</span>
+          </label>
+        )}
       </div>
+
+      {cardTab && selectedIds.length > 0 && (
+        <div className="archive-bulk" role="group" aria-label="Действия с выбранными карточками">
+          <span className="muted">Выбрано: {selectedIds.length}</span>
+          <div className="archive-bulk-actions">
+            <button className="btn small" type="button" disabled={busy} onClick={() => void restoreSelected()}>
+              Восстановить
+            </button>
+            {tab === 'tasks' ? (
+              <button className="btn small" type="button" disabled={busy} onClick={() => setPending({ kind: 'bulkTrash', ids: selectedIds })}>
+                В корзину
+              </button>
+            ) : (
+              <button className="btn small danger" type="button" disabled={busy} onClick={() => setPending({ kind: 'bulkDelete', ids: selectedIds })}>
+                Удалить навсегда
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {tab === 'trash' && (
         <p className="muted small-note">
@@ -269,7 +361,16 @@ export function ArchiveView() {
 
       <div className="archive-list">
         {rows.map((row) => (
-          <div key={row.id} className="archive-row">
+          <div key={row.id} className={selected.has(row.id) ? 'archive-row selected' : 'archive-row'}>
+            {cardTab && (
+              <input
+                type="checkbox"
+                className="archive-check"
+                checked={selected.has(row.id)}
+                onChange={() => toggleRow(row.id)}
+                aria-label={`Выбрать карточку «${row.title}»`}
+              />
+            )}
             <div className="archive-main">
               <div className="archive-title">{row.title}</div>
               {row.subtitle !== '' && <div className="muted small-text">{row.subtitle}</div>}
@@ -281,9 +382,19 @@ export function ArchiveView() {
               )}
             </div>
             <div className="archive-actions">
-              <button className="btn small" type="button" disabled={busyId === row.id} onClick={() => void restore(row)}>
+              <button className="btn small" type="button" disabled={busyId === row.id || busy} onClick={() => void restore(row)}>
                 Восстановить
               </button>
+              {tab === 'tasks' && (
+                <button
+                  className="btn small"
+                  type="button"
+                  disabled={busyId === row.id || busy}
+                  onClick={() => setPending({ kind: 'trashTask', row })}
+                >
+                  В корзину
+                </button>
+              )}
               {tab === 'columns' && (
                 <button className="btn small danger" type="button" onClick={() => setPending({ kind: 'column', row })}>
                   Удалить навсегда
@@ -325,6 +436,48 @@ export function ArchiveView() {
           onClose={() => setPending(null)}
         >
           Карточка «{pending.row.title}» будет удалена вместе с описанием и значениями свойств. Восстановить её будет невозможно.
+        </DangerConfirmDialog>
+      )}
+      {pending?.kind === 'trashTask' && (
+        <ConfirmDialog
+          title="Убрать карточку в корзину?"
+          confirmLabel="Убрать в корзину"
+          onConfirm={async () => {
+            await actions.trashTask(pending.row.id);
+            notify('Карточка убрана в корзину', 'info');
+          }}
+          onClose={() => setPending(null)}
+        >
+          Карточка «{pending.row.title}» уйдёт в корзину. Оттуда её можно восстановить, пока не удалишь насовсем.
+        </ConfirmDialog>
+      )}
+      {pending?.kind === 'bulkTrash' && (
+        <ConfirmDialog
+          title="Убрать карточки в корзину?"
+          confirmLabel="Убрать в корзину"
+          onConfirm={async () => {
+            await actions.trashTasks(pending.ids);
+            setSelected(new Set());
+            notify(`В корзину убрано: ${pending.ids.length}.`, 'info');
+          }}
+          onClose={() => setPending(null)}
+        >
+          Выбранные карточки ({pending.ids.length}) уйдут в корзину. Оттуда их можно восстановить, пока не удалишь насовсем.
+        </ConfirmDialog>
+      )}
+      {pending?.kind === 'bulkDelete' && (
+        <DangerConfirmDialog
+          title="Удалить карточки навсегда?"
+          confirmLabel="Удалить навсегда"
+          phrase="удалить"
+          onConfirm={async () => {
+            await actions.deleteTasksForever(pending.ids);
+            setSelected(new Set());
+            notify(`Удалено навсегда: ${pending.ids.length}.`, 'info');
+          }}
+          onClose={() => setPending(null)}
+        >
+          Выбранные карточки ({pending.ids.length}) будут удалены вместе с описанием и значениями свойств. Восстановить их будет невозможно.
         </DangerConfirmDialog>
       )}
       {pending?.kind === 'column' && (
