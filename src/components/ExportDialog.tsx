@@ -182,7 +182,12 @@ export function ExportDialog({
       <section className="export-section export-card">
         <div className="export-fields-head">
           <div className="export-section-title">
-            <div className="label">Столбцы и их порядок</div>
+            <div className="label">
+              <span className="export-step" aria-hidden="true">
+                2
+              </span>{' '}
+              Столбцы и их порядок
+            </div>
             <div className="muted small-note">
               Выбрано {selected.length} из {rows.length}
             </div>
@@ -217,7 +222,7 @@ export function ExportDialog({
       <section className="export-section export-card">
         <div className="export-section-head">
           <span className="export-step" aria-hidden="true">
-            2
+            3
           </span>
           <div className="export-section-title">
             <div className="label">Формат</div>
