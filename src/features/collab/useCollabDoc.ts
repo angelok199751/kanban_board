@@ -14,25 +14,36 @@ import { htmlToYState } from './taskDoc';
 
 const SAVE_DELAY_MS = 800;
 
+export type CollabDocKind = 'task' | 'article';
+
+/** Набор операций с таблицей снимков: карточки и статьи устроены одинаково. */
+function docApiFor(kind: CollabDocKind) {
+  return kind === 'article'
+    ? { get: api.getArticleDocState, create: api.createArticleDocState, save: api.saveArticleDocState, room: 'article-doc' }
+    : { get: api.getTaskDocState, create: api.createTaskDocState, save: api.saveTaskDocState, room: 'task-doc' };
+}
+
 /**
- * Общий документ описания карточки.
+ * Общий текст: описание карточки или текст статьи.
  *
- * При открытии: загружаем состояние из task_docs, а если его ещё нет — создаём
- * первый снимок из сохранённого HTML. Дальше подключаемся к комнате Supabase
+ * При открытии: загружаем состояние из task_docs/article_docs, а если его ещё нет —
+ * создаём первый снимок из сохранённого HTML. Дальше подключаемся к комнате Supabase
  * и начинаем обмениваться правками и присутствием. Состояние периодически
  * сохраняем, чтобы следующий участник получил не только HTML, но и историю.
  *
- * Если таблица миграции 009 ещё не создана (или база недоступна), возвращаем
- * doc = null: карточка продолжит работать в обычном режиме без совместного
- * редактирования, а не сломается.
+ * Если таблица миграции ещё не создана (или база недоступна), возвращаем
+ * doc = null: карточка или статья продолжит работать в обычном режиме без
+ * совместного редактирования, а не сломается.
  */
 export function useCollabDoc({
-  taskId,
+  id,
+  kind = 'task',
   html,
   user,
   enabled,
 }: {
-  taskId: string;
+  id: string;
+  kind?: CollabDocKind;
   html: string | null;
   user: CollabUser | null;
   enabled: boolean;
@@ -42,7 +53,7 @@ export function useCollabDoc({
   peers: CollabUser[];
   status: CollabStatus;
   error: string | null;
-  /** Дождаться сохранения снимка CRDT (перед закрытием карточки). */
+  /** Дождаться сохранения снимка CRDT (перед закрытием карточки или статьи). */
   flush: () => Promise<void>;
 } {
   const [doc, setDoc] = useState<Y.Doc | null>(null);
@@ -56,15 +67,16 @@ export function useCollabDoc({
   htmlRef.current = html;
   const userRef = useRef<CollabUser | null>(user);
   userRef.current = user;
-  // сохранение снимка по требованию (перед закрытием карточки): ссылка на актуальный flush из эффекта
+  // сохранение снимка по требованию (перед закрытием карточки или статьи): ссылка на актуальный flush из эффекта
   const flushRef = useRef<() => Promise<void>>(async () => undefined);
 
   const userId = user?.id ?? null;
 
   useEffect(() => {
-    // пустое описание — тоже нормальный документ: html === null значит «ещё не загрузили карточку»
+    // пустой текст — тоже нормальный документ: html === null значит «ещё не загрузили карточку или статью»
     if (!enabled || !userId || htmlRef.current === null) return;
 
+    const docApi = docApiFor(kind);
     let alive = true;
     const current = new Y.Doc();
     let currentProvider: SupabaseYjsProvider | null = null;
@@ -74,12 +86,12 @@ export function useCollabDoc({
 
     const save = async (): Promise<boolean> => {
       try {
-        await api.saveTaskDocState(taskId, toBase64(Y.encodeStateAsUpdate(current)));
+        await docApi.save(id, toBase64(Y.encodeStateAsUpdate(current)));
         if (alive) setError(null);
         return true;
       } catch (e) {
         dirty = true;
-        if (alive) setError(`Не удалось сохранить совместное описание: ${humanizeError(e instanceof Error ? e.message : String(e))}`);
+        if (alive) setError(`Не удалось сохранить совместный текст: ${humanizeError(e instanceof Error ? e.message : String(e))}`);
         return false;
       }
     };
@@ -121,10 +133,10 @@ export function useCollabDoc({
 
     void (async () => {
       try {
-        let state = await api.getTaskDocState(taskId);
+        let state = await docApi.get(id);
         if (!state) {
           const seed = toBase64(htmlToYState(htmlRef.current ?? ''));
-          state = await api.createTaskDocState(taskId, seed);
+          state = await docApi.create(id, seed);
         }
         if (!alive) return;
 
@@ -133,7 +145,7 @@ export function useCollabDoc({
         dirty = false;
         window.clearTimeout(saveTimer);
 
-        const channel = supabase.channel(`task-doc:${taskId}`, {
+        const channel = supabase.channel(`${docApi.room}:${id}`, {
           config: { broadcast: { self: false } },
         });
         currentProvider = new SupabaseYjsProvider(
@@ -168,10 +180,10 @@ export function useCollabDoc({
         currentProvider.awareness.off('change', updatePeers);
         currentProvider.destroy();
       }
-      // последний снимок после закрытия карточки: не теряем правки, сделанные перед самым закрытием
+      // последний снимок после закрытия карточки или статьи: не теряем правки, сделанные перед самым закрытием
       if (dirty) {
-        void api
-          .saveTaskDocState(taskId, toBase64(Y.encodeStateAsUpdate(current)))
+        void docApi
+          .save(id, toBase64(Y.encodeStateAsUpdate(current)))
           .catch(() => undefined);
       }
       current.destroy();
@@ -180,7 +192,7 @@ export function useCollabDoc({
       setPeers([]);
       setStatus('connecting');
     };
-  }, [enabled, taskId, userId]);
+  }, [enabled, id, kind, userId]);
 
   return { doc, provider, peers, status, error, flush: () => flushRef.current() };
 }

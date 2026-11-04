@@ -1,6 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import * as api from '../features/boards/api';
 import { useActions } from '../features/boards/hooks';
+import { useCollabDoc } from '../features/collab/useCollabDoc';
+import { colorForUser } from '../features/collab/userColor';
+import { useAuth } from '../auth/AuthProvider';
 import { labelsToText, parseLabels, sameLabels } from '../lib/labels';
 import { isHtmlEmpty, sanitizeHtml } from '../lib/sanitize';
 import { humanizeError } from '../lib/supabase';
@@ -36,7 +39,6 @@ export function ArticleDialog({
   const [title, setTitle] = useState(initialTitle);
   const [labelsText, setLabelsText] = useState('');
   const [editorHtml, setEditorHtml] = useState('');
-  const [editorKey, setEditorKey] = useState(0);
   const [status, setStatus] = useState<SaveStatus>({ kind: 'idle' });
   const [conflict, setConflict] = useState<ArticleFull | null>(null);
   const [closeBlocked, setCloseBlocked] = useState(false);
@@ -48,13 +50,34 @@ export function ArticleDialog({
   const version = useRef(0);
   const baseTitle = useRef(initialTitle);
   const baseLabels = useRef<string[]>([]);
-  const baseHtml = useRef('');
+  // последний сохранённый снимок текста: повторно тот же HTML не пишем
+  const snapshotHtml = useRef('');
   const htmlRef = useRef('');
   const htmlDirty = useRef(false);
   const htmlTimer = useRef<number | undefined>(undefined);
   const queue = useRef<Promise<unknown>>(Promise.resolve());
   const pending = useRef(new Set<Promise<unknown>>());
   const failed = useRef(new Map<string, string>());
+
+  const auth = useAuth();
+  const member = auth.state.status === 'ready' ? auth.state.member : null;
+  const collabUserId = member?.user_id ?? null;
+  const collabUserName = member?.display_name ?? null;
+  const collabUser = useMemo(
+    () =>
+      collabUserId && collabUserName
+        ? { id: collabUserId, name: collabUserName, color: colorForUser(collabUserId) }
+        : null,
+    [collabUserId, collabUserName],
+  );
+  // общий текст статьи: правки сливаются у всех, кто открыл эту статью
+  const collab = useCollabDoc({
+    id: articleId,
+    kind: 'article',
+    html: load.kind === 'ready' ? editorHtml : null,
+    user: collabUser,
+    enabled: load.kind === 'ready',
+  });
 
   // ------------------------------------------------------------ загрузка свежей статьи
   useEffect(() => {
@@ -70,7 +93,7 @@ export function ArticleDialog({
         version.current = full.version;
         baseTitle.current = full.title;
         baseLabels.current = full.labels;
-        baseHtml.current = full.content_html;
+        snapshotHtml.current = full.content_html;
         htmlRef.current = full.content_html;
         setTitle(full.title);
         setLabelsText(labelsToText(full.labels));
@@ -115,14 +138,13 @@ export function ArticleDialog({
     return run;
   }
 
-  type Patch = { title?: string; labels?: string[]; content_html?: string };
+  type Patch = { title?: string; labels?: string[] };
 
   async function apply(patch: Patch) {
     const saved = await actions.saveArticle(baseId, articleId, patch, version.current);
     version.current = saved.version;
     if (patch.title !== undefined) baseTitle.current = patch.title;
     if (patch.labels !== undefined) baseLabels.current = patch.labels;
-    if (patch.content_html !== undefined) baseHtml.current = patch.content_html;
   }
 
   function persist(patch: Patch): Promise<void> {
@@ -135,10 +157,9 @@ export function ArticleDialog({
         if (!fresh) throw new Error('Статью удалили, пока она была открыта.');
         const unchanged =
           fresh.title === baseTitle.current &&
-          sameLabels(fresh.labels, baseLabels.current) &&
-          fresh.content_html === baseHtml.current;
+          sameLabels(fresh.labels, baseLabels.current);
         if (unchanged) {
-          // содержимое то же, разошлась только версия: берём новую и сохраняем
+          // заголовок и метки те же, разошлась только версия: берём новую и сохраняем
           version.current = fresh.version;
           await apply(patch);
           return;
@@ -175,13 +196,14 @@ export function ArticleDialog({
     if (!htmlDirty.current) return true;
     let clean = sanitizeHtml(htmlRef.current);
     if (isHtmlEmpty(clean)) clean = '';
-    if (clean === baseHtml.current) {
+    if (clean === snapshotHtml.current) {
       htmlDirty.current = false;
       return true;
     }
     htmlDirty.current = false;
     try {
-      await track('content', persist({ content_html: clean }));
+      await track('content', enqueue(() => actions.saveArticleContent(baseId, articleId, clean)));
+      snapshotHtml.current = clean;
       return true;
     } catch {
       htmlDirty.current = true;
@@ -202,14 +224,9 @@ export function ArticleDialog({
     version.current = conflict.version;
     baseTitle.current = conflict.title;
     baseLabels.current = conflict.labels;
-    baseHtml.current = conflict.content_html;
-    htmlRef.current = conflict.content_html;
-    htmlDirty.current = false;
     failed.current.clear();
     setTitle(conflict.title);
     setLabelsText(labelsToText(conflict.labels));
-    setEditorHtml(conflict.content_html);
-    setEditorKey((k) => k + 1);
     setConflict(null);
     setStatus({ kind: 'saved' });
   }
@@ -219,18 +236,16 @@ export function ArticleDialog({
     version.current = conflict.version;
     baseTitle.current = conflict.title;
     baseLabels.current = conflict.labels;
-    baseHtml.current = conflict.content_html;
     failed.current.clear();
     setConflict(null);
     await flushFields();
-    htmlDirty.current = true;
-    await flushContent();
   }
 
   // ------------------------------------------------------------ корзина и закрытие
   async function saveEverything(): Promise<boolean> {
     const fieldsOk = await flushFields();
     const contentOk = await flushContent();
+    await collab.flush();
     await Promise.allSettled([...pending.current]);
     return fieldsOk && contentOk && failed.current.size === 0;
   }
@@ -309,13 +324,42 @@ export function ArticleDialog({
         <section className="text-pane" aria-label="Текст статьи">
           <div className="text-head">
             <span>Текст</span>
+            <span className="text-head-side">
+              {collab.peers.length > 0 && (
+                <span className="presence" aria-label="Сейчас в статье">
+                  {collab.peers.map((peer) => (
+                    <span key={peer.id} className="presence-peer" title={`${peer.name} сейчас здесь`}>
+                      <span className="presence-dot" style={{ background: peer.color }} />
+                      {peer.name}
+                    </span>
+                  ))}
+                </span>
+              )}
+              <span className="text-hint">Подробности, шаги, ссылки</span>
+            </span>
           </div>
           {load.kind === 'loading' && <div className="muted rich-loading">Загружаем статью…</div>}
           {load.kind === 'error' && <div className="error">{load.message}</div>}
-          {ready && <RichTextEditor key={editorKey} html={editorHtml} onChange={onContentChange} onBlur={() => void flushContent()} />}
+          {ready && collab.doc && collab.provider && (
+            <RichTextEditor
+              html={editorHtml}
+              doc={collab.doc}
+              provider={collab.provider}
+              user={collabUser}
+              onChange={onContentChange}
+              onBlur={() => void flushContent()}
+            />
+          )}
+          {ready && (!collab.doc || !collab.provider) && collab.error && (
+            <RichTextEditor html={editorHtml} onChange={onContentChange} onBlur={() => void flushContent()} />
+          )}
+          {ready && (!collab.doc || !collab.provider) && !collab.error && (
+            <div className="muted rich-loading">Готовим совместный текст…</div>
+          )}
+          {collab.error && <div className="collab-warn">{collab.error}</div>}
           {conflict && (
             <div className="conflict" role="alert">
-              <strong>Статью уже изменил кто-то другой.</strong> То, что ты написала, осталось на экране и пока не сохранено.
+              <strong>Статью уже изменил кто-то другой.</strong> Заголовок и метки на экране не сохранены, текст при этом не потеряется.
               <div className="row end">
                 <button className="btn small" type="button" onClick={loadFresh}>
                   Загрузить свежую версию

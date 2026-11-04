@@ -387,43 +387,58 @@ export async function saveDescription(id: string, html: string): Promise<void> {
   );
 }
 
-// ---------------------------------------------------------------- состояние совместного описания (Yjs)
+// ---------------------------------------------------------------- состояние совместного текста (Yjs)
+
+type DocTable = 'task_docs' | 'article_docs';
+type DocKey = 'task_id' | 'article_id';
 
 /** Сохранённое состояние CRDT в base64; null — документ ещё ни разу не открывали. */
-export async function getTaskDocState(taskId: string): Promise<string | null> {
+async function getDocState(table: DocTable, key: DocKey, id: string): Promise<string | null> {
   const rows = await run<{ state: string }[]>(
-    supabase.from('task_docs').select('state').eq('task_id', taskId),
+    supabase.from(table).select('state').eq(key, id),
   );
   return rows.length > 0 ? rows[0].state : null;
 }
 
 /**
  * Кладёт первый снимок, только если документа ещё нет, и возвращает победивший.
- * Два человека, открывшие карточку одновременно, получат одно и то же состояние:
- * проигравший не создаёт вторую историю правок, а берёт готовую.
+ * Два человека, открывшие карточку или статью одновременно, получат одно и то же
+ * состояние: проигравший не создаёт вторую историю правок, а берёт готовую.
  */
-export async function createTaskDocState(taskId: string, state: string): Promise<string> {
+async function createDocState(table: DocTable, key: DocKey, id: string, state: string): Promise<string> {
   const inserted = await run<{ state: string }[]>(
     supabase
-      .from('task_docs')
-      .upsert({ task_id: taskId, state }, { onConflict: 'task_id', ignoreDuplicates: true })
+      .from(table)
+      .upsert({ [key]: id, state }, { onConflict: key, ignoreDuplicates: true })
       .select('state'),
   );
   if (inserted.length > 0) return inserted[0].state;
-  const current = await getTaskDocState(taskId);
-  if (!current) throw new Error('Не удалось создать документ описания.');
+  const current = await getDocState(table, key, id);
+  if (!current) throw new Error('Не удалось создать совместный документ.');
   return current;
 }
 
 /** Перезаписывает снимок состояния. Правки уже сведены на клиенте, поэтому проверка версии не нужна. */
-export async function saveTaskDocState(taskId: string, state: string): Promise<void> {
+async function saveDocState(table: DocTable, key: DocKey, id: string, state: string): Promise<void> {
   await run<unknown[]>(
     supabase
-      .from('task_docs')
-      .upsert({ task_id: taskId, state }, { onConflict: 'task_id' })
-      .select('task_id'),
+      .from(table)
+      .upsert({ [key]: id, state }, { onConflict: key })
+      .select(key),
   );
 }
+
+export const getTaskDocState = (taskId: string) => getDocState('task_docs', 'task_id', taskId);
+export const createTaskDocState = (taskId: string, state: string) =>
+  createDocState('task_docs', 'task_id', taskId, state);
+export const saveTaskDocState = (taskId: string, state: string) =>
+  saveDocState('task_docs', 'task_id', taskId, state);
+
+export const getArticleDocState = (articleId: string) => getDocState('article_docs', 'article_id', articleId);
+export const createArticleDocState = (articleId: string, state: string) =>
+  createDocState('article_docs', 'article_id', articleId, state);
+export const saveArticleDocState = (articleId: string, state: string) =>
+  saveDocState('article_docs', 'article_id', articleId, state);
 
 /** Id карточек доски, в названии или описании которых есть строка (без учёта регистра). */
 export async function searchTaskIds(boardId: string, query: string): Promise<string[]> {
@@ -689,6 +704,22 @@ export async function saveArticle(
       .select(ARTICLE_LIST_FIELDS),
   );
   if (rows.length === 0) throw new ConflictError('Статью уже изменил кто-то другой или она удалена.');
+  return rows[0];
+}
+
+/**
+ * Снимок текста статьи для поиска и списка. Идёт отдельно от заголовка и меток:
+ * текст общий (CRDT), и его правка не должна считаться конфликтом статьи.
+ */
+export async function saveArticleContent(id: string, html: string): Promise<KnowledgeArticle> {
+  const rows = await run<KnowledgeArticle[]>(
+    supabase
+      .from('knowledge_articles')
+      .update({ content_html: html })
+      .eq('id', id)
+      .select(ARTICLE_LIST_FIELDS),
+  );
+  if (rows.length === 0) throw new Error('Статья не найдена.');
   return rows[0];
 }
 

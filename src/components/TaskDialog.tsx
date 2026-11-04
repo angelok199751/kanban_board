@@ -72,7 +72,7 @@ export function TaskDialog({
   );
   // общий документ описания: правки сливаются у всех, кто открыл эту карточку
   const collab = useCollabDoc({
-    taskId: task.id,
+    id: task.id,
     html: load.kind === 'ready' ? editorHtml : null,
     user: collabUser,
     enabled: load.kind === 'ready',

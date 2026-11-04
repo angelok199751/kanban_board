@@ -3,7 +3,7 @@ const now = () => new Date().toISOString();
 const uid = () => crypto.randomUUID();
 const ME = { id: 'u-an', email: 'an@qaflow.test' };
 
-const TABLES = ['members', 'boards', 'board_columns', 'properties', 'property_options', 'tasks', 'task_values', 'views', 'knowledge_bases', 'knowledge_articles', 'board_templates', 'task_docs'];
+const TABLES = ['members', 'boards', 'board_columns', 'properties', 'property_options', 'tasks', 'task_values', 'views', 'knowledge_bases', 'knowledge_articles', 'board_templates', 'task_docs', 'article_docs'];
 const db = { tables: Object.fromEntries(TABLES.map((t) => [t, []])), handlers: [], session: { user: ME }, authListeners: [], user: ME.id };
 // каналы Realtime: имя -> подписчики, чтобы broadcast доходил до остальных вкладок/клиентов
 const channels = new Map();
@@ -21,7 +21,7 @@ function notify(table, kind, row) {
 function insertRow(table, input) {
   const row = { ...input };
   const t = db.tables;
-  row.id ??= (table === 'task_values' || table === 'members' || table === 'task_docs') ? undefined : uid();
+  row.id ??= (table === 'task_values' || table === 'members' || table === 'task_docs' || table === 'article_docs') ? undefined : uid();
   if (row.id === undefined) delete row.id;
   const ts = now();
   switch (table) {
@@ -98,6 +98,12 @@ function insertRow(table, input) {
       Object.assign(row, { updated_at: ts });
       break;
     }
+    case 'article_docs': {
+      if (!row.article_id || !t.knowledge_articles.some((x) => x.id === row.article_id)) throw err('23503', 'violates foreign key constraint');
+      if (typeof row.state !== 'string' || row.state.length === 0) throw err('23514', 'check constraint');
+      Object.assign(row, { updated_at: ts });
+      break;
+    }
   }
   db.tables[table].push(row);
   notify(table, 'INSERT', row);
@@ -146,8 +152,14 @@ function updateRow(table, row, patch) {
     row.search_text = stripTags(row.description_html);
   } else if (table === 'task_docs') {
     row.task_id = old.task_id; row.updated_at = ts;
+  } else if (table === 'article_docs') {
+    row.article_id = old.article_id; row.updated_at = ts;
   } else if (table === 'knowledge_articles') {
-    row.id = old.id; row.base_id = old.base_id; row.version = old.version + 1; row.updated_at = ts;
+    row.id = old.id; row.base_id = old.base_id;
+    // как touch_article(): правка одного текста не считается изменением статьи
+    const changed = ['title', 'labels', 'deleted_at'].some((k) => JSON.stringify(row[k]) !== JSON.stringify(old[k]));
+    row.version = changed ? old.version + 1 : old.version;
+    row.updated_at = ts;
     if ((row.labels || []).length > 20) { Object.assign(row, old); throw err('23514', 'check constraint'); }
     row.search_text = stripTags(row.content_html);
   } else if (table === 'task_values') {
@@ -190,7 +202,11 @@ function removeRow(table, row) {
     drop('properties', (p) => p.board_id === row.id); drop('views', (v) => v.board_id === row.id);
   } else if (table === 'tasks') { drop('task_values', (v) => v.task_id === row.id); drop('task_docs', (d) => d.task_id === row.id); }
   else if (table === 'properties') { drop('task_values', (v) => v.property_id === row.id); drop('property_options', (o) => o.property_id === row.id); }
-  else if (table === 'knowledge_bases') drop('knowledge_articles', (a) => a.base_id === row.id);
+  else if (table === 'knowledge_bases') {
+    const arts = t.knowledge_articles.filter((a) => a.base_id === row.id).map((a) => a.id);
+    drop('article_docs', (d) => arts.includes(d.article_id));
+    drop('knowledge_articles', (a) => a.base_id === row.id);
+  } else if (table === 'knowledge_articles') drop('article_docs', (d) => d.article_id === row.id);
   drop(table, (r) => r === row);
   notify(table, 'DELETE', row);
 }

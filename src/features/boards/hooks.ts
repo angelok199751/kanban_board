@@ -679,6 +679,14 @@ export function useActions() {
     return saved;
   }
 
+  /** Снимок текста статьи для поиска. Сам текст сводится через CRDT, версия статьи не проверяется. */
+  async function saveArticleContent(baseId: string, id: string, html: string): Promise<void> {
+    const saved = await api.saveArticleContent(id, html);
+    const key = ['kb-articles', baseId] as const;
+    const list = qc.getQueryData<KnowledgeArticle[]>(key);
+    if (list) qc.setQueryData<KnowledgeArticle[]>(key, list.map((a) => (a.id === id ? saved : a)));
+  }
+
   const trashArticle = (id: string) => archiveOp(() => api.setArticleDeleted(id, true));
   const restoreArticle = (id: string) => archiveOp(() => api.setArticleDeleted(id, false));
   const deleteArticleForever = (id: string) => archiveOp(() => api.deleteArticleForever(id));
@@ -760,6 +768,7 @@ export function useActions() {
     deleteKnowledgeBaseForever,
     createArticle,
     saveArticle,
+    saveArticleContent,
     trashArticle,
     restoreArticle,
     deleteArticleForever,
