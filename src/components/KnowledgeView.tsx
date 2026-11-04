@@ -1,10 +1,13 @@
-import { useMemo, useState } from 'react';
+import { lazy, Suspense, useMemo, useState } from 'react';
 import { useActions, useArticles } from '../features/boards/hooks';
 import { htmlToText } from '../lib/export';
 import { plural } from '../lib/format';
 import type { KnowledgeArticle, KnowledgeBase } from '../lib/types';
-import { ArticleDialog } from './ArticleDialog';
 import { BoardDialog } from './BoardDialog';
+import { Dialog } from './Dialog';
+
+// Текст статьи тянет Tiptap, Yjs и совместную работу — грузим его только при открытии статьи.
+const ArticleDialog = lazy(() => import('./ArticleDialog').then((m) => ({ default: m.ArticleDialog })));
 
 const lower = (s: string) => s.toLocaleLowerCase('ru');
 
@@ -122,13 +125,21 @@ export function KnowledgeView({ base }: { base: KnowledgeBase }) {
         />
       )}
       {open && (
-        <ArticleDialog
-          key={open.id}
-          baseId={base.id}
-          articleId={open.id}
-          initialTitle={open.title}
-          onClose={() => setOpen(null)}
-        />
+        <Suspense
+          fallback={
+            <Dialog title="Статья" onClose={() => setOpen(null)} wide>
+              <p className="muted">Загрузка редактора…</p>
+            </Dialog>
+          }
+        >
+          <ArticleDialog
+            key={open.id}
+            baseId={base.id}
+            articleId={open.id}
+            initialTitle={open.title}
+            onClose={() => setOpen(null)}
+          />
+        </Suspense>
       )}
     </div>
   );

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { lazy, Suspense, useMemo, useState } from 'react';
 import {
   closestCenter,
   DndContext,
@@ -38,15 +38,18 @@ import { ColumnDialog } from './ColumnDialog';
 import { ColumnView } from './ColumnView';
 import { BoardDialog } from './BoardDialog';
 import { ConfirmDialog } from './ConfirmDialog';
+import { Dialog } from './Dialog';
 import { ExportDialog } from './ExportDialog';
 import { FieldsDialog } from './FieldsDialog';
 import { FiltersDialog } from './FiltersDialog';
 import { ImportDialog } from './ImportDialog';
 import { PropertiesDialog } from './PropertiesDialog';
 import { TaskCardView } from './TaskCard';
-import { TaskDialog } from './TaskDialog';
 import { ManageViewDialog, SaveViewDialog } from './ViewDialog';
 import { ViewBar } from './ViewBar';
+
+// Редактор карточки тянет Tiptap, Yjs и совместную работу — грузим его только при открытии карточки.
+const TaskDialog = lazy(() => import('./TaskDialog').then((m) => ({ default: m.TaskDialog })));
 
 type Order = Record<string, string[]>; // id колонки -> id карточек по порядку
 
@@ -578,15 +581,23 @@ export function BoardView({ board, boards }: { board: Board; boards: Board[] }) 
         </ConfirmDialog>
       )}
       {dialog?.kind === 'task' && (
-        <TaskDialog
-          key={dialog.task.id}
-          boardId={board.id}
-          task={dialog.task}
-          properties={activeProperties}
-          options={options}
-          values={Array.from(valuesByTask.get(dialog.task.id)?.values() ?? [])}
-          onClose={() => setDialog(null)}
-        />
+        <Suspense
+          fallback={
+            <Dialog title="Карточка" onClose={() => setDialog(null)} wide>
+              <p className="muted">Загрузка редактора…</p>
+            </Dialog>
+          }
+        >
+          <TaskDialog
+            key={dialog.task.id}
+            boardId={board.id}
+            task={dialog.task}
+            properties={activeProperties}
+            options={options}
+            values={Array.from(valuesByTask.get(dialog.task.id)?.values() ?? [])}
+            onClose={() => setDialog(null)}
+          />
+        </Suspense>
       )}
       {dialog?.kind === 'properties' && (
         <PropertiesDialog
