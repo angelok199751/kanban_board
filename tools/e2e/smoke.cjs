@@ -109,6 +109,7 @@ const ok = (c, m) => { if (!c) throw new Error(m); };
     await field('Заметка').locator('input').fill('Проверить на стенде');
     await field('Заметка').locator('input').blur();
     await page.waitForSelector('.save-status:has-text("Все изменения сохранены")');
+    eq((await db()).task_docs.length, 1, 'снимок совместного описания создан');
   });
   await step('E2. неверная ссылка не теряется и блокирует закрытие', async () => {
     await field('Ссылка').locator('input').fill('abc');
@@ -123,10 +124,12 @@ const ok = (c, m) => { if (!c) throw new Error(m); };
     await page.waitForSelector('.save-status:has-text("Все изменения сохранены")');
   });
   await step('E3. описание с форматированием сохраняется само', async () => {
+    const before = (await db()).tasks.find((x) => x.title === 'Войти в систему').version;
     await page.locator('.rich-field').click();
     await page.keyboard.type('Подробное описание задачи');
     await page.waitForFunction(() => window.__db.tables.tasks.some((x) => x.description_html.includes('Подробное описание задачи')), null, { timeout: 5000 });
     await page.waitForSelector('.save-status:has-text("Все изменения сохранены")', { timeout: 5000 });
+    eq((await db()).tasks.find((x) => x.title === 'Войти в систему').version, before, 'правка описания не меняет версию карточки');
     await closeCard();
     const chips = await page.locator('.task-slot', { hasText: 'Войти в систему' }).locator('.pill').allInnerTexts();
     ok(chips.some((x) => x.includes('Анна')), 'нет значка варианта: ' + chips.join('|'));

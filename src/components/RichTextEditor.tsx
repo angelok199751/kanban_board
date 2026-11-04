@@ -1,26 +1,16 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import type * as Y from 'yjs';
 import { EditorContent, useEditor, type Editor } from '@tiptap/react';
-import StarterKit from '@tiptap/starter-kit';
-import Placeholder from '@tiptap/extension-placeholder';
+import Collaboration from '@tiptap/extension-collaboration';
+import CollaborationCaret from '@tiptap/extension-collaboration-caret';
 import { isValidUrl } from '../lib/format';
-import { findUrls, linkifyDom } from '../lib/linkify';
-import { sanitizeHtml } from '../lib/sanitize';
-
-const PLACEHOLDER = 'Добавь описание: подробности, шаги воспроизведения, ссылки…';
+import { findUrls } from '../lib/linkify';
+import { createBaseExtensions } from '../lib/editorConfig';
+import { prepareHtml } from '../lib/richHtml';
+import type { CollabUser, SupabaseYjsProvider } from '../features/collab/provider';
 
 type LinkMark = { type: 'link'; attrs: { href: string; target: string; rel: string } };
 type InlineNode = { type: 'text'; text: string; marks?: LinkMark[] };
-
-/** Готовит сохранённый HTML к показу: убирает лишние теги и делает ссылки кликабельными. */
-function prepareHtml(html: string): string {
-  const clean = sanitizeHtml(html);
-  if (typeof document === 'undefined') return clean;
-  const root = document.createElement('div');
-  root.innerHTML = clean;
-  // уже сохранённые описания тоже показываем со ссылками; сохранятся они при следующей правке
-  linkifyDom(root);
-  return root.innerHTML;
-}
 
 /** Строка текста -> узлы документа, где найденные ссылки уже являются ссылками. */
 function inlineNodes(line: string): InlineNode[] {
@@ -71,16 +61,27 @@ const COMMANDS: { key: string; label: ReactNode; title: string; run: (editor: Ed
 
 /**
  * Редактор описания на Tiptap: жирный, курсив, подчёркивание, зачёркивание, списки, ссылки.
- * Начальный текст берётся один раз при создании; чтобы подставить другой, меняют key компонента.
+ *
+ * Без doc — обычный редактор: начальный текст берётся один раз при создании,
+ * чтобы подставить другой, меняют key компонента.
+ * С doc — совместный: содержимым владеет Yjs, двое и больше могут печатать одновременно,
+ * курсоры и имена участников видны через provider/user.
+ *
  * Вставка всегда как простой текст: чужая разметка в описание не попадает.
  */
 export function RichTextEditor({
   html,
+  doc,
+  provider,
+  user,
   disabled,
   onChange,
   onBlur,
 }: {
   html: string;
+  doc?: Y.Doc | null;
+  provider?: SupabaseYjsProvider | null;
+  user?: CollabUser | null;
   disabled?: boolean;
   onChange: (html: string) => void;
   onBlur: () => void;
@@ -92,30 +93,23 @@ export function RichTextEditor({
   onBlurRef.current = onBlur;
 
   const editorRef = useRef<Editor | null>(null);
-  const [initialHtml] = useState(() => prepareHtml(html));
+  const [initialHtml] = useState(() => (doc ? '' : prepareHtml(html)));
 
   const editor = useEditor({
-    extensions: [
-      // оставляем только ту разметку, которую разрешает sanitizeHtml
-      StarterKit.configure({
-        heading: false,
-        blockquote: false,
-        code: false,
-        codeBlock: false,
-        horizontalRule: false,
-        trailingNode: false,
-        link: {
-          openOnClick: false,
-          autolink: true,
-          linkOnPaste: false,
-          defaultProtocol: 'https',
-          shouldAutoLink: (url) => /^https?:\/\//i.test(url),
-          HTMLAttributes: { target: '_blank', rel: 'noopener noreferrer' },
-        },
-      }),
-      Placeholder.configure({ placeholder: PLACEHOLDER }),
-    ],
-    content: initialHtml,
+    extensions: (() => {
+      const extensions = createBaseExtensions({ collaborative: Boolean(doc) });
+      if (doc) extensions.push(Collaboration.configure({ document: doc, field: 'default' }));
+      if (provider && user) {
+        extensions.push(
+          CollaborationCaret.configure({
+            provider,
+            user: { name: user.name, color: user.color },
+          }),
+        );
+      }
+      return extensions;
+    })(),
+    content: doc ? undefined : initialHtml,
     editable: !disabled,
     editorProps: {
       attributes: {

@@ -11,7 +11,8 @@ if (files.length === 0) throw new Error('миграции не найдены');
 const sql = files.map((f) => readFileSync(join(dir, f), 'utf-8')).join('\n').replace(/--[^\n]*/g, '');
 
 const tables = [...sql.matchAll(/create\s+table\s+public\.(\w+)/gi)].map((m) => m[1]);
-if (tables.length < 11) throw new Error(`ожидалось не меньше 11 таблиц, найдено ${tables.length}`);
+if (tables.length < 12) throw new Error(`ожидалось не меньше 12 таблиц, найдено ${tables.length}`);
+if (!tables.includes('task_docs')) throw new Error('миграция 009: не найдена таблица task_docs');
 
 const problems: string[] = [];
 const rlsEnabled = new Set([...sql.matchAll(/alter\s+table\s+public\.(\w+)\s+enable\s+row\s+level\s+security/gi)].map((m) => m[1]));
@@ -33,7 +34,9 @@ for (const m of sql.matchAll(/alter\s+publication\s+supabase_realtime\s+add\s+ta
   for (const t of m[1].matchAll(/public\.(\w+)/g)) realtime.add(t[1]);
 }
 
-const NOT_REALTIME = new Set(['members']); // список участников не нужно рассылать
+// Список участников не нужно рассылать; состояние CRDT (task_docs) тоже:
+// оно ходит через Broadcast-канал карточки, а не через postgres_changes.
+const NOT_REALTIME = new Set(['members', 'task_docs']);
 for (const t of tables) {
   if (!rlsEnabled.has(t)) problems.push(`${t}: не включён row level security`);
   if (!revoked.has(t)) problems.push(`${t}: у роли anon не отозваны права (revoke all ... from anon)`);

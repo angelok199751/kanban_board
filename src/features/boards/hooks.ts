@@ -328,7 +328,7 @@ export function useActions() {
   }
 
   /**
-   * Сохраняет название и/или описание карточки с проверкой версии: чужие изменения молча не затираем
+   * Сохраняет название карточки с проверкой версии: чужие изменения молча не затираем
    * (при расхождении бросает ConflictError). Список доски обновляется без полной перезагрузки.
    */
   async function saveTask(
@@ -344,6 +344,15 @@ export function useActions() {
     }));
     if (patch.description_html !== undefined) void qc.invalidateQueries({ queryKey: ['search', boardId] });
     return saved;
+  }
+
+  /**
+   * Сохраняет только HTML описания — снимок для поиска и экспорта.
+   * Само описание сводится через CRDT, поэтому версия карточки здесь не проверяется и не меняется.
+   */
+  async function saveDescription(boardId: string, taskId: string, html: string): Promise<void> {
+    await api.saveDescription(taskId, html);
+    void qc.invalidateQueries({ queryKey: ['search', boardId] });
   }
 
   /**
@@ -712,6 +721,7 @@ export function useActions() {
     createTask,
     importTasks,
     saveTask,
+    saveDescription,
     copyTask,
     moveTask,
     createProperty,

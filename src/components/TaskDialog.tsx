@@ -1,6 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import * as api from '../features/boards/api';
 import { useActions } from '../features/boards/hooks';
+import { useCollabDoc } from '../features/collab/useCollabDoc';
+import { colorForUser } from '../features/collab/userColor';
+import { useAuth } from '../auth/AuthProvider';
 import { buildCardFields } from '../lib/cardFields';
 import { isHtmlEmpty, sanitizeHtml } from '../lib/sanitize';
 import { humanizeError } from '../lib/supabase';
@@ -43,10 +46,10 @@ export function TaskDialog({
   onClose: () => void;
 }) {
   const actions = useActions();
+  const auth = useAuth();
   const [load, setLoad] = useState<LoadState>({ kind: 'loading' });
   const [title, setTitle] = useState(task.title);
   const [editorHtml, setEditorHtml] = useState('');
-  const [editorKey, setEditorKey] = useState(0);
   const [status, setStatus] = useState<SaveStatus>({ kind: 'idle' });
   const [conflict, setConflict] = useState<TaskFull | null>(null);
   const [closeBlocked, setCloseBlocked] = useState(false);
@@ -57,12 +60,31 @@ export function TaskDialog({
   const [propsCollapsed, setPropsCollapsed] = useStored('qaflow.cardPropsCollapsed', false, (raw) => raw === 'true');
   const [actionError, setActionError] = useState<string | null>(null);
 
+  const member = auth.state.status === 'ready' ? auth.state.member : null;
+  const collabUserId = member?.user_id ?? null;
+  const collabUserName = member?.display_name ?? null;
+  const collabUser = useMemo(
+    () =>
+      collabUserId && collabUserName
+        ? { id: collabUserId, name: collabUserName, color: colorForUser(collabUserId) }
+        : null,
+    [collabUserId, collabUserName],
+  );
+  // общий документ описания: правки сливаются у всех, кто открыл эту карточку
+  const collab = useCollabDoc({
+    taskId: task.id,
+    html: load.kind === 'ready' ? editorHtml : null,
+    user: collabUser,
+    enabled: load.kind === 'ready',
+  });
+
   // значения, известные серверу на момент последнего успешного сохранения или загрузки
   const version = useRef(task.version);
   const baseTitle = useRef(task.title);
-  const baseHtml = useRef('');
   // то, что сейчас в редакторе описания
   const htmlRef = useRef('');
+  // последний сохранённый снимок описания: повторно тот же HTML не пишем
+  const snapshotHtml = useRef('');
   const descDirty = useRef(false);
   const descTimer = useRef<number | undefined>(undefined);
   // учёт сохранений
@@ -83,8 +105,8 @@ export function TaskDialog({
         }
         version.current = full.version;
         baseTitle.current = full.title;
-        baseHtml.current = full.description_html;
         htmlRef.current = full.description_html;
+        snapshotHtml.current = full.description_html;
         setTitle(full.title);
         setEditorHtml(full.description_html);
         setLoad({ kind: 'ready' });
@@ -128,25 +150,24 @@ export function TaskDialog({
     return run;
   }
 
-  async function apply(patch: { title?: string; description_html?: string }) {
-    const saved = await actions.saveTask(boardId, task.id, patch, version.current);
+  async function applyTitle(value: string) {
+    const saved = await actions.saveTask(boardId, task.id, { title: value }, version.current);
     version.current = saved.version;
-    if (patch.title !== undefined) baseTitle.current = patch.title;
-    if (patch.description_html !== undefined) baseHtml.current = patch.description_html;
+    baseTitle.current = value;
   }
 
-  function persist(patch: { title?: string; description_html?: string }): Promise<void> {
+  function persistTitle(value: string): Promise<void> {
     return enqueue(async () => {
       try {
-        await apply(patch);
+        await applyTitle(value);
       } catch (e) {
         if (!(e instanceof api.ConflictError)) throw e;
         const fresh = await api.getTaskFull(task.id);
         if (!fresh) throw new Error('Карточку удалили, пока она была открыта.');
-        if (fresh.title === baseTitle.current && fresh.description_html === baseHtml.current) {
-          // менялось только положение карточки: это не конфликт, берём новую версию и сохраняем
+        if (fresh.title === baseTitle.current) {
+          // менялось только положение карточки или описание: это не конфликт названий
           version.current = fresh.version;
-          await apply(patch);
+          await applyTitle(value);
           return;
         }
         setConflict(fresh);
@@ -165,25 +186,27 @@ export function TaskDialog({
     }
     if (value === baseTitle.current) return true;
     try {
-      await track('title', persist({ title: value }));
+      await track('title', persistTitle(value));
       return true;
     } catch {
       return false;
     }
   }
 
+  /** Сохраняет только HTML-снимок описания для поиска и экспорта; сам текст уже сведён через Yjs. */
   async function flushDescription(): Promise<boolean> {
     window.clearTimeout(descTimer.current);
     if (!descDirty.current) return true;
     let clean = sanitizeHtml(htmlRef.current);
     if (isHtmlEmpty(clean)) clean = '';
-    if (clean === baseHtml.current) {
+    if (clean === snapshotHtml.current) {
       descDirty.current = false;
       return true;
     }
     descDirty.current = false;
     try {
-      await track('desc', persist({ description_html: clean }));
+      await track('desc', actions.saveDescription(boardId, task.id, clean));
+      snapshotHtml.current = clean;
       return true;
     } catch {
       descDirty.current = true; // не потеряем при закрытии: попробуем снова
@@ -203,13 +226,8 @@ export function TaskDialog({
     if (!conflict) return;
     version.current = conflict.version;
     baseTitle.current = conflict.title;
-    baseHtml.current = conflict.description_html;
-    htmlRef.current = conflict.description_html;
-    descDirty.current = false;
     failed.current.clear();
     setTitle(conflict.title);
-    setEditorHtml(conflict.description_html);
-    setEditorKey((k) => k + 1);
     setConflict(null);
     setStatus({ kind: 'saved' });
   }
@@ -218,12 +236,9 @@ export function TaskDialog({
     if (!conflict) return;
     version.current = conflict.version;
     baseTitle.current = conflict.title;
-    baseHtml.current = conflict.description_html;
     failed.current.clear();
     setConflict(null);
     await saveTitle();
-    descDirty.current = true;
-    await flushDescription();
   }
 
   // ------------------------------------------------------------ архив и корзина
@@ -231,6 +246,7 @@ export function TaskDialog({
   async function leaveWith(action: () => Promise<void>) {
     const titleOk = await saveTitle();
     const descOk = await flushDescription();
+    await collab.flush();
     await Promise.allSettled([...pending.current]);
     if (!titleOk || !descOk || failed.current.size > 0) {
       setCloseBlocked(true);
@@ -253,6 +269,7 @@ export function TaskDialog({
   async function requestClose() {
     const titleOk = await saveTitle();
     const descOk = await flushDescription();
+    await collab.flush();
     await Promise.allSettled([...pending.current]);
     if (!titleOk || !descOk || failed.current.size > 0) {
       setCloseBlocked(true);
@@ -359,16 +376,46 @@ export function TaskDialog({
         <section className="text-pane" aria-label="Описание">
           <div className="text-head">
             <span>Описание</span>
-            <span className="text-hint">Подробности, шаги воспроизведения, ссылки</span>
+            <span className="text-head-side">
+              {collab.peers.length > 0 && (
+                <span className="presence" aria-label="Сейчас в карточке">
+                  {collab.peers.map((peer) => (
+                    <span key={peer.id} className="presence-peer" title={`${peer.name} сейчас здесь`}>
+                      <span className="presence-dot" style={{ background: peer.color }} />
+                      {peer.name}
+                    </span>
+                  ))}
+                </span>
+              )}
+              <span className="text-hint">Подробности, шаги воспроизведения, ссылки</span>
+            </span>
           </div>
           {load.kind === 'loading' && <div className="muted rich-loading">Загружаем карточку…</div>}
           {load.kind === 'error' && <div className="error">{load.message}</div>}
-          {ready && (
-            <RichTextEditor key={editorKey} html={editorHtml} onChange={onDescriptionChange} onBlur={() => void flushDescription()} />
+          {ready && collab.doc && collab.provider && (
+            <RichTextEditor
+              html={editorHtml}
+              doc={collab.doc}
+              provider={collab.provider}
+              user={collabUser}
+              onChange={onDescriptionChange}
+              onBlur={() => void flushDescription()}
+            />
           )}
+          {ready && (!collab.doc || !collab.provider) && collab.error && (
+            <RichTextEditor
+              html={editorHtml}
+              onChange={onDescriptionChange}
+              onBlur={() => void flushDescription()}
+            />
+          )}
+          {ready && (!collab.doc || !collab.provider) && !collab.error && (
+            <div className="muted rich-loading">Готовим совместное описание…</div>
+          )}
+          {collab.error && <div className="collab-warn">{collab.error}</div>}
           {conflict && (
             <div className="conflict" role="alert">
-              <strong>Карточку уже изменил кто-то другой.</strong> То, что ты написала, осталось на экране и пока не сохранено.
+              <strong>Карточку уже изменил кто-то другой.</strong> Название на экране не сохранено, описание при этом не потеряется.
               <div className="row end">
                 <button className="btn small" type="button" onClick={loadFresh}>
                   Загрузить свежую версию

@@ -3,8 +3,10 @@ const now = () => new Date().toISOString();
 const uid = () => crypto.randomUUID();
 const ME = { id: 'u-an', email: 'an@qaflow.test' };
 
-const TABLES = ['members', 'boards', 'board_columns', 'properties', 'property_options', 'tasks', 'task_values', 'views', 'knowledge_bases', 'knowledge_articles', 'board_templates'];
+const TABLES = ['members', 'boards', 'board_columns', 'properties', 'property_options', 'tasks', 'task_values', 'views', 'knowledge_bases', 'knowledge_articles', 'board_templates', 'task_docs'];
 const db = { tables: Object.fromEntries(TABLES.map((t) => [t, []])), handlers: [], session: { user: ME }, authListeners: [], user: ME.id };
+// каналы Realtime: имя -> подписчики, чтобы broadcast доходил до остальных вкладок/клиентов
+const channels = new Map();
 db.tables.members.push({ user_id: ME.id, display_name: 'Ан', role: 'admin', is_active: true });
 db.tables.members.push({ user_id: 'u-anna', display_name: 'Анна', role: 'member', is_active: true });
 
@@ -19,7 +21,7 @@ function notify(table, kind, row) {
 function insertRow(table, input) {
   const row = { ...input };
   const t = db.tables;
-  row.id ??= (table === 'task_values' || table === 'members') ? undefined : uid();
+  row.id ??= (table === 'task_values' || table === 'members' || table === 'task_docs') ? undefined : uid();
   if (row.id === undefined) delete row.id;
   const ts = now();
   switch (table) {
@@ -90,6 +92,12 @@ function insertRow(table, input) {
       if (typeof row.structure !== 'object' || row.structure === null || Array.isArray(row.structure)) throw err('23514', 'structure must be an object');
       Object.assign(row, { created_at: ts, updated_at: ts });
       break;
+    case 'task_docs': {
+      if (!row.task_id || !t.tasks.some((x) => x.id === row.task_id)) throw err('23503', 'violates foreign key constraint');
+      if (typeof row.state !== 'string' || row.state.length === 0) throw err('23514', 'check constraint');
+      Object.assign(row, { updated_at: ts });
+      break;
+    }
   }
   db.tables[table].push(row);
   notify(table, 'INSERT', row);
@@ -130,9 +138,14 @@ function updateRow(table, row, patch) {
   const ts = now();
   if (table === 'tasks') {
     row.id = old.id; row.board_id = old.board_id; row.number = old.number; row.created_by = old.created_by; row.created_at = old.created_at;
-    row.version = old.version + 1; row.updated_at = ts; row.updated_by = db.user;
+    // как touch_task(): правка одного описания не считается изменением карточки
+    const changed = ['title', 'column_id', 'position', 'archived_at', 'deleted_at'].some((k) => row[k] !== old[k]);
+    row.version = changed ? old.version + 1 : old.version;
+    row.updated_at = ts; row.updated_by = db.user;
     if (patch.column_id && !db.tables.board_columns.some((c) => c.id === row.column_id && c.board_id === row.board_id)) { Object.assign(row, old); throw err('23503', 'violates foreign key constraint'); }
     row.search_text = stripTags(row.description_html);
+  } else if (table === 'task_docs') {
+    row.task_id = old.task_id; row.updated_at = ts;
   } else if (table === 'knowledge_articles') {
     row.id = old.id; row.base_id = old.base_id; row.version = old.version + 1; row.updated_at = ts;
     if ((row.labels || []).length > 20) { Object.assign(row, old); throw err('23514', 'check constraint'); }
@@ -171,10 +184,11 @@ function removeRow(table, row) {
     const props = t.properties.filter((p) => p.board_id === row.id).map((p) => p.id);
     const tasks = t.tasks.filter((x) => x.board_id === row.id).map((x) => x.id);
     drop('task_values', (v) => tasks.includes(v.task_id) || props.includes(v.property_id));
+    drop('task_docs', (d) => tasks.includes(d.task_id));
     drop('property_options', (o) => props.includes(o.property_id));
     drop('tasks', (x) => x.board_id === row.id); drop('board_columns', (c) => c.board_id === row.id);
     drop('properties', (p) => p.board_id === row.id); drop('views', (v) => v.board_id === row.id);
-  } else if (table === 'tasks') drop('task_values', (v) => v.task_id === row.id);
+  } else if (table === 'tasks') { drop('task_values', (v) => v.task_id === row.id); drop('task_docs', (d) => d.task_id === row.id); }
   else if (table === 'properties') { drop('task_values', (v) => v.property_id === row.id); drop('property_options', (o) => o.property_id === row.id); }
   else if (table === 'knowledge_bases') drop('knowledge_articles', (a) => a.base_id === row.id);
   drop(table, (r) => r === row);
@@ -219,7 +233,7 @@ class Query {
   select(cols = '*', opts = {}) { if (this.op === 'select') { this.cols = cols; this.opts = opts; } else { this.returning = true; this.cols = cols; } return this; }
   insert(p) { this.op = 'insert'; this.payload = p; return this; }
   update(p) { this.op = 'update'; this.payload = p; return this; }
-  upsert(p, o) { this.op = 'upsert'; this.payload = p; this.onConflict = o?.onConflict; return this; }
+  upsert(p, o) { this.op = 'upsert'; this.payload = p; this.onConflict = o?.onConflict; this.ignoreDuplicates = o?.ignoreDuplicates === true; return this; }
   delete() { this.op = 'delete'; return this; }
   eq(c, v) { this.filters.push((r) => getVal(r, c) === v); return this; }
   is(c, v) { this.filters.push((r) => (getVal(r, c) ?? null) === v); return this; }
@@ -283,7 +297,11 @@ class Query {
           if (this.op === 'upsert') {
             const keys = (this.onConflict || '').split(',');
             const ex = db.tables[this.table].find((r) => keys.every((k) => r[k] === p[k]));
-            if (ex) { updateRow(this.table, ex, p); done.push(ex); continue; }
+            if (ex) {
+              // ignoreDuplicates: строка уже есть — не меняем и не возвращаем её в select
+              if (!this.ignoreDuplicates) { updateRow(this.table, ex, p); done.push(ex); }
+              continue;
+            }
           }
           done.push(insertRow(this.table, p));
         }
@@ -380,11 +398,51 @@ export function createClient() {
   return {
     from: (t) => new Query(t),
     rpc: async (name, args) => { try { const data = rpcs[name](args); return { data: data ?? null, error: null }; } catch (e) { return { data: null, error: { message: e.message, code: e.code } }; } },
-    channel: () => {
-      const ch = { on(_type, filter, cb) { db.handlers.push({ table: filter.table, cb, ch }); return ch; }, subscribe(cb) { setTimeout(() => cb && cb('SUBSCRIBED'), 5); return ch; } };
+    channel: (name, opts) => {
+      const events = [];
+      let joined = false;
+      const ch = {
+        name,
+        on(type, filter, cb) {
+          if (type === 'broadcast') events.push({ event: filter?.event, cb });
+          else db.handlers.push({ table: filter.table, cb, ch });
+          return ch;
+        },
+        subscribe(cb) {
+          joined = true;
+          if (!channels.has(name)) channels.set(name, new Set());
+          channels.get(name).add(ch);
+          setTimeout(() => { if (joined && cb) cb('SUBSCRIBED'); }, 5);
+          return ch;
+        },
+        send(message) {
+          setTimeout(() => {
+            if (!joined) return;
+            const self = opts?.config?.broadcast?.self === true;
+            for (const peer of channels.get(name) ?? []) {
+              if (peer === ch && !self) continue;
+              for (const h of peer.events) {
+                if (h.event === message.event) h.cb({ type: 'broadcast', event: message.event, payload: message.payload });
+              }
+            }
+          }, 0);
+          return Promise.resolve('ok');
+        },
+        unsubscribe() {
+          joined = false;
+          const set = channels.get(name);
+          if (set) { set.delete(ch); if (set.size === 0) channels.delete(name); }
+          return Promise.resolve('ok');
+        },
+        events,
+      };
       return ch;
     },
-    removeChannel: async (ch) => { db.handlers = db.handlers.filter((h) => h.ch !== ch); },
+    removeChannel: async (ch) => {
+      db.handlers = db.handlers.filter((h) => h.ch !== ch);
+      const set = channels.get(ch?.name);
+      if (set) { set.delete(ch); if (set.size === 0) channels.delete(ch.name); }
+    },
     auth: {
       getSession: async () => ({ data: { session: db.session } }),
       onAuthStateChange: (cb) => { db.authListeners.push(cb); setTimeout(() => cb('INITIAL_SESSION', db.session), 0); return { data: { subscription: { unsubscribe() { db.authListeners = db.authListeners.filter((x) => x !== cb); } } } }; },

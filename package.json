@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "tsx tools/test/ts/format.test.ts && tsx tools/test/ts/search.test.ts && tsx tools/test/ts/view.test.ts && tsx tools/test/ts/export.test.ts && tsx tools/test/ts/xlsx.test.ts && tsx tools/test/ts/archive.test.ts && tsx tools/test/ts/sync.test.ts && tsx tools/test/ts/labels.test.ts && tsx tools/test/ts/stats.test.ts && tsx tools/test/ts/migrations.test.ts && tsx tools/test/ts/backup.test.ts && tsx tools/test/ts/cardFields.test.ts && tsx tools/test/ts/color.test.ts && tsx tools/test/ts/linkify.test.ts && tsx tools/test/ts/values.test.ts && tsx tools/test/ts/templates.test.ts && tsx tools/test/ts/importTasks.test.ts"
+    "test": "tsx tools/test/ts/format.test.ts && tsx tools/test/ts/search.test.ts && tsx tools/test/ts/view.test.ts && tsx tools/test/ts/export.test.ts && tsx tools/test/ts/xlsx.test.ts && tsx tools/test/ts/archive.test.ts && tsx tools/test/ts/sync.test.ts && tsx tools/test/ts/labels.test.ts && tsx tools/test/ts/stats.test.ts && tsx tools/test/ts/migrations.test.ts && tsx tools/test/ts/backup.test.ts && tsx tools/test/ts/cardFields.test.ts && tsx tools/test/ts/color.test.ts && tsx tools/test/ts/linkify.test.ts && tsx tools/test/ts/values.test.ts && tsx tools/test/ts/templates.test.ts && tsx tools/test/ts/importTasks.test.ts && tsx tools/test/ts/collab.test.ts"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.1.0",
@@ -15,14 +15,19 @@
     "@dnd-kit/utilities": "^3.2.2",
     "@supabase/supabase-js": "^2.45.0",
     "@tanstack/react-query": "^5.51.0",
+    "@tiptap/extension-collaboration": "^3.32.2",
+    "@tiptap/extension-collaboration-caret": "^3.32.2",
     "@tiptap/extension-placeholder": "^3.32.2",
     "@tiptap/pm": "^3.32.2",
     "@tiptap/react": "^3.32.2",
     "@tiptap/starter-kit": "^3.32.2",
+    "@tiptap/y-tiptap": "^3.0.12",
     "dompurify": "^3.2.0",
     "fractional-indexing": "^3.2.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "y-protocols": "^1.0.6",
+    "yjs": "^13.6.27"
   },
   "devDependencies": {
     "@types/react": "^18.3.3",

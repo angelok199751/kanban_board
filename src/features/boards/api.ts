@@ -377,6 +377,54 @@ export async function saveTask(
   return rows[0];
 }
 
+/**
+ * Снимок описания для поиска и экспорта. Идёт отдельно от сохранения названия:
+ * описание теперь общее (CRDT), и его правка не должна считаться конфликтом карточки.
+ */
+export async function saveDescription(id: string, html: string): Promise<void> {
+  await run<unknown[]>(
+    supabase.from('tasks').update({ description_html: html }).eq('id', id).select('id'),
+  );
+}
+
+// ---------------------------------------------------------------- состояние совместного описания (Yjs)
+
+/** Сохранённое состояние CRDT в base64; null — документ ещё ни разу не открывали. */
+export async function getTaskDocState(taskId: string): Promise<string | null> {
+  const rows = await run<{ state: string }[]>(
+    supabase.from('task_docs').select('state').eq('task_id', taskId),
+  );
+  return rows.length > 0 ? rows[0].state : null;
+}
+
+/**
+ * Кладёт первый снимок, только если документа ещё нет, и возвращает победивший.
+ * Два человека, открывшие карточку одновременно, получат одно и то же состояние:
+ * проигравший не создаёт вторую историю правок, а берёт готовую.
+ */
+export async function createTaskDocState(taskId: string, state: string): Promise<string> {
+  const inserted = await run<{ state: string }[]>(
+    supabase
+      .from('task_docs')
+      .upsert({ task_id: taskId, state }, { onConflict: 'task_id', ignoreDuplicates: true })
+      .select('state'),
+  );
+  if (inserted.length > 0) return inserted[0].state;
+  const current = await getTaskDocState(taskId);
+  if (!current) throw new Error('Не удалось создать документ описания.');
+  return current;
+}
+
+/** Перезаписывает снимок состояния. Правки уже сведены на клиенте, поэтому проверка версии не нужна. */
+export async function saveTaskDocState(taskId: string, state: string): Promise<void> {
+  await run<unknown[]>(
+    supabase
+      .from('task_docs')
+      .upsert({ task_id: taskId, state }, { onConflict: 'task_id' })
+      .select('task_id'),
+  );
+}
+
 /** Id карточек доски, в названии или описании которых есть строка (без учёта регистра). */
 export async function searchTaskIds(boardId: string, query: string): Promise<string[]> {
   const pattern = likePattern(query.trim());
