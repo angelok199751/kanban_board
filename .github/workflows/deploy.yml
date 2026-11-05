@@ -24,6 +24,14 @@ jobs:
           node-version: 20
       - run: npm install
       - run: npm run build
+      # Зеркало для сетей, где провайдер блокирует supabase.co.
+      # Пока переменная репозитория SUPABASE_PROXY_URL не задана, шаг пропускается
+      # и основная сборка остаётся ровно такой же, как раньше.
+      - name: Build mirror (optional)
+        if: vars.SUPABASE_PROXY_URL != ''
+        run: npm run build:mirror
+        env:
+          SUPABASE_PROXY_URL: ${{ vars.SUPABASE_PROXY_URL }}
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

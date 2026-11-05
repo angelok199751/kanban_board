@@ -1,8 +1,12 @@
 // ВАЖНО: сюда можно вставлять только ПУБЛИЧНЫЕ значения.
 // Секретный ключ (service_role / secret) сюда нельзя — никогда.
 
-// Project URL из Supabase → Project Settings → API
-export const SUPABASE_URL = 'https://kpwsonthpczijvcesgnj.supabase.co';
+// Project URL из Supabase → Project Settings → API.
+// В обычной сборке используется напрямую. Для зеркала в сетях, где провайдер
+// блокирует supabase.co, сюда подставляется адрес прокси через VITE_SUPABASE_URL.
+const DEFAULT_SUPABASE_URL = 'https://kpwsonthpczijvcesgnj.supabase.co';
+
+export const SUPABASE_URL = (import.meta.env?.VITE_SUPABASE_URL?.trim() || DEFAULT_SUPABASE_URL).replace(/\/+$/, '');
 
 // Публичный ключ: «anon» или «publishable» (Project Settings → API)
 export const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_iBnui6f5O3Dk2t7zRY2F0w_HxLS-V3-';
