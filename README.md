@@ -37,6 +37,32 @@ npm run dev
 ```
 Сборка для проверки: `npm run build`.
 
+## 4. Если провайдер блокирует Supabase
+
+Если в рабочей сети не открывается `supabase.co` и не хочется включать VPN,
+рядом публикуется зеркало:
+
+```
+https://angelok199751.github.io/kanban_board/mirror/
+```
+
+Оно ходит в **тот же** Supabase через бесплатный Cloudflare Worker. Данные не
+копируются, основное приложение продолжает работать напрямую. Развёртывание
+Worker и включение зеркала — один раз, по инструкции
+[`docs/02-cloudflare-proxy.md`](docs/02-cloudflare-proxy.md).
+
+Локальная сборка зеркала (нужен адрес уже созданного Worker):
+
+```
+npm run build:mirror
+```
+
+В PowerShell адрес задаётся так:
+
+```
+$env:SUPABASE_PROXY_URL='https://qaflow-supabase-proxy.<аккаунт>.workers.dev'; npm run build:mirror
+```
+
 ## Что проверить после публикации
 
 1. Открывается экран входа (без VPN).
@@ -57,6 +83,6 @@ npm run dev
 |---|---|
 | `src/`, `index.html`, `package.json` | Приложение (React + TypeScript + Vite) |
 | `supabase/migrations/` | SQL-миграции: `001_members.sql`, `002_kanban_core.sql` (уже применены в проекте) |
-| `docs/` | Аудит и архитектура (`00`), настройка Supabase (`01`) |
+| `docs/` | Аудит и архитектура (`00`), настройка Supabase (`01`), зеркало через Cloudflare (`02`) |
 | `tools/test/` | SQL-тесты схемы и RLS (локальный PostgreSQL, ещё не запускались) |
 | `legacy/` | Исходники старого QA Flow на Apps Script (референс) и неиспользуемый инструмент импорта |
