@@ -38,6 +38,8 @@ body {
 }
 button, input { font: inherit; }
 button { cursor: pointer; }
+/* «пальчик» на всём, что открывается или срабатывает по клику */
+a[href], [role="button"], summary { cursor: pointer; }
 h1, h2 { margin: 0; letter-spacing: -.5px; }
 h1 { font-size: 23px; }
 h2 { font-size: 18px; }
@@ -674,7 +676,7 @@ select.field.small { width: auto; padding: 6px 10px; font-size: 12px; }
 .rich-field p.is-empty:first-child::before {
   content: attr(data-placeholder); float: left; height: 0; color: var(--muted); pointer-events: none;
 }
-.rich-field a { color: var(--link); text-decoration: underline; text-underline-offset: 2px; }
+.rich-field a { color: var(--link); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .rich-field li::marker { color: var(--accent); }
 .rich-field ul, .rich-field ol { margin: 4px 0; padding-left: 22px; }
 .rich-loading { padding: 18px 0; }
