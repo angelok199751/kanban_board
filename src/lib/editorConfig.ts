@@ -21,7 +21,7 @@ export function createBaseExtensions({ collaborative = false }: { collaborative?
       trailingNode: false,
       undoRedo: collaborative ? false : undefined,
       link: {
-        openOnClick: false,
+        openOnClick: true,
         autolink: true,
         linkOnPaste: false,
         defaultProtocol: 'https',
