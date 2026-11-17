@@ -18,10 +18,12 @@ const ok = (value: unknown, m: string) => {
 
 // ---------------------------------------------------------------- правила
 ok(isAllowedOrigin('https://angelok199751.github.io'), 'GitHub Pages разрешён');
+ok(isAllowedOrigin('https://angelinakust.gitlab.io'), 'GitLab Pages разрешён');
 ok(isAllowedOrigin('http://localhost:5173'), 'localhost разрешён');
 ok(isAllowedOrigin('http://127.0.0.1:4173'), '127.0.0.1 разрешён');
 ok(isAllowedOrigin('http://[::1]:5173'), 'IPv6 localhost разрешён');
 ok(!isAllowedOrigin('https://angelok199751.github.io.evil.example'), 'похожий чужой домен запрещён');
+ok(!isAllowedOrigin('https://angelinakust.gitlab.io.evil.example'), 'похожий gitlab-домен запрещён');
 ok(!isAllowedOrigin('http://localhost.evil.example:5173'), 'localhost-обманка запрещена');
 ok(!isAllowedOrigin('https://evil.example'), 'чужой origin запрещён');
 ok(!isAllowedOrigin(null), 'пустой origin запрещён');

@@ -40,8 +40,11 @@ RPC и WebSocket для совместного редактирования — 
    `tools/proxy/cloudflare-worker.js` из этого репозитория.
 4. Нажми **Deploy**.
 5. Скопируй адрес вида
-   `https://qaflow-supabase-proxy.<твой-аккаунт>.workers.dev`.
-   Это и есть прокси. Хвостовой слэш не добавляй.
+   `https://qaflow-supabase-proxy.<аккаунт-cloudflare>.workers.dev`.
+   `<аккаунт-cloudflare>` — это не Supabase, а поддомен `workers.dev` того
+   аккаунта **Cloudflare**, где развёрнут Worker. Его можно увидеть на странице
+   Worker в разделе **Deployments → Domains** (или в **Workers & Pages →
+   Settings** аккаунта). Это и есть прокси. Хвостовой слэш не добавляй.
 
 Проверка: открой в браузере `https://<адрес-worker>/health`. Должен вернуться
 JSON:
@@ -63,10 +66,11 @@ JSON:
 В `tools/proxy/cloudflare-worker.js` уже разрешены:
 
 - `https://angelok199751.github.io` — GitHub Pages (и основное приложение, и зеркало);
+- `https://angelinakust.gitlab.io` — GitLab Pages (запасной деплой и его зеркало);
 - `http://localhost:<порт>` и `http://127.0.0.1:<порт>` — локальная разработка.
 
-Если приложение когда-нибудь переедет на другой домен, поменяй константу
-`GITHUB_ORIGIN` в коде Worker, снова нажми **Deploy** и пересобери зеркало.
+Если приложение когда-нибудь переедет на другой домен, добавь его в множество
+`ALLOWED_ORIGINS` в коде Worker, снова нажми **Deploy** и пересобери зеркало.
 Пока домен другой, Worker отвечает `403 Origin is not allowed` — это защита от
 использования прокси чужими сайтами.
 
@@ -75,9 +79,13 @@ JSON:
 1. Репозиторий → **Settings** → **Secrets and variables** → **Actions**.
 2. Вкладка **Variables** → **New repository variable**.
 3. Имя: `SUPABASE_PROXY_URL`.
-4. Значение: `https://qaflow-supabase-proxy.<твой-аккаунт>.workers.dev`
+4. Значение: `https://qaflow-supabase-proxy.<аккаунт-cloudflare>.workers.dev`
    (без слэша в конце).
 5. **Add variable**.
+
+Ту же переменную нужно задать и в GitLab, иначе зеркало на запасном сайте не
+соберётся: GitLab → **Settings → CI/CD → Variables → Add variable**, ключ
+`SUPABASE_PROXY_URL`, то же значение. После этого нажми **Run pipeline**.
 
 Это не секрет: адрес Worker всё равно виден в браузерной сборке. Секретный
 ключ Supabase сюда класть нельзя — он и не нужен.
@@ -92,6 +100,7 @@ JSON:
 
 ```
 https://angelok199751.github.io/kanban_board/mirror/
+https://angelinakust.gitlab.io/kanban_board/mirror/
 ```
 
 4. Основное приложение останется на прежнем адресе и продолжит работать

@@ -13,7 +13,8 @@
  *
  * Безопасность:
  *   - целевой адрес жёстко зашит (меняется только через env.SUPABASE_URL);
- *   - принимаются запросы только с известных origin (GitHub Pages и localhost);
+ *   - принимаются запросы только с известных origin (GitHub Pages, GitLab Pages
+ *     и localhost);
  *   - произвольные пути и чужие хосты не проксируются.
  *
  * Публичный ключ Supabase и так лежит в браузерной сборке. Настоящая защита
@@ -22,14 +23,17 @@
 
 export const DEFAULT_SUPABASE_URL = 'https://kpwsonthpczijvcesgnj.supabase.co';
 
-const GITHUB_ORIGIN = 'https://angelok199751.github.io';
+const ALLOWED_ORIGINS = new Set([
+  'https://angelok199751.github.io',
+  'https://angelinakust.gitlab.io',
+]);
 const LOCAL_ORIGIN = /^http:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/;
 const ALLOWED_PATH = /^\/(?:auth|rest|realtime)\/v1(?:\/|$)/;
 
 /** Разрешён ли origin браузера. Пустой origin (curl, health-check) сюда не проходит. */
 export function isAllowedOrigin(origin) {
   if (!origin) return false;
-  return origin === GITHUB_ORIGIN || LOCAL_ORIGIN.test(origin);
+  return ALLOWED_ORIGINS.has(origin) || LOCAL_ORIGIN.test(origin);
 }
 
 /** Проксируются только пути Supabase Auth, REST и Realtime. */
