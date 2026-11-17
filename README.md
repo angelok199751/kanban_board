@@ -84,7 +84,7 @@ npm run build:mirror
 В PowerShell адрес задаётся так:
 
 ```
-$env:SUPABASE_PROXY_URL='https://qaflow-supabase-proxy.<аккаунт>.workers.dev'; npm run build:mirror
+$env:SUPABASE_PROXY_URL='https://qaflow-supabase-proxy.angeli010597.workers.dev'; npm run build:mirror
 ```
 
 ## Что проверить после публикации

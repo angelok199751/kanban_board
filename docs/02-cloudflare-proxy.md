@@ -46,6 +46,9 @@ RPC и WebSocket для совместного редактирования — 
    Worker в разделе **Deployments → Domains** (или в **Workers & Pages →
    Settings** аккаунта). Это и есть прокси. Хвостовой слэш не добавляй.
 
+   Текущий рабочий адрес проекта:
+   `https://qaflow-supabase-proxy.angeli010597.workers.dev`
+
 Проверка: открой в браузере `https://<адрес-worker>/health`. Должен вернуться
 JSON:
 
@@ -79,7 +82,7 @@ JSON:
 1. Репозиторий → **Settings** → **Secrets and variables** → **Actions**.
 2. Вкладка **Variables** → **New repository variable**.
 3. Имя: `SUPABASE_PROXY_URL`.
-4. Значение: `https://qaflow-supabase-proxy.<аккаунт-cloudflare>.workers.dev`
+4. Значение: `https://qaflow-supabase-proxy.angeli010597.workers.dev`
    (без слэша в конце).
 5. **Add variable**.
 
