@@ -1,0 +1,16 @@
+image: node:20
+
+# Тот же проект публикуется в GitLab Pages из этого же репозитория.
+# GitHub Actions (.github/workflows/deploy.yml) продолжает работать отдельно.
+pages:
+  stage: deploy
+  script:
+    - npm ci
+    - npm run build
+    # Зеркало для сетей, где блокируется supabase.co.
+    # Переменная задаётся в GitLab: Settings → CI/CD → Variables.
+    - if [ -n "$SUPABASE_PROXY_URL" ]; then npm run build:mirror; fi
+  pages:
+    publish: dist
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

@@ -28,6 +28,29 @@
 
 Любое следующее изменение в ветке `main` публикуется автоматически. Откат: в Git вернуть предыдущий коммит.
 
+### Запасной деплой на GitLab Pages
+
+Тот же репозиторий публикуется и на GitLab. GitHub workflow при этом не меняется: это второй независимый деплой из тех же коммитов, без копирования кода и данных.
+
+1. Создай проект на GitLab, например `kanban_board`.
+2. Добавь второй remote и отправь код:
+   ```
+   git remote add gitlab https://gitlab.com/<твой-логин>/kanban_board.git
+   git push origin main
+   git push gitlab main
+   ```
+3. В GitLab: **Settings → CI/CD → Variables** добавь `SUPABASE_PROXY_URL` с адресом Cloudflare Worker — он включит зеркало для сетей, где блокируется `supabase.co`.
+4. Дождись зелёного pipeline. Адрес приложения:
+   ```
+   https://<твой-логин>.gitlab.io/kanban_board/
+   ```
+   Зеркало будет здесь:
+   ```
+   https://<твой-логин>.gitlab.io/kanban_board/mirror/
+   ```
+
+При необходимости GitLab можно сделать основным remote: пушить сначала туда, а в GitHub — когда он доступен.
+
 ## 3. Запуск у себя (необязательно)
 
 Нужен Node.js 20+.
@@ -44,6 +67,7 @@ npm run dev
 
 ```
 https://angelok199751.github.io/kanban_board/mirror/
+https://<твой-логин>.gitlab.io/kanban_board/mirror/
 ```
 
 Оно ходит в **тот же** Supabase через бесплатный Cloudflare Worker. Данные не
