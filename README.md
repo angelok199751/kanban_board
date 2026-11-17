@@ -32,24 +32,24 @@
 
 Тот же репозиторий публикуется и на GitLab. GitHub workflow при этом не меняется: это второй независимый деплой из тех же коммитов, без копирования кода и данных.
 
-1. Создай проект на GitLab, например `kanban_board`.
-2. Добавь второй remote и отправь код:
+1. Проект уже создан: `https://gitlab.com/angelinakust/kanban_board`. Он подключён как remote `gitlab` (GitHub остаётся `origin`).
+2. Отправь код в оба репозитория. **Сначала GitLab**, потом GitHub — так запасной сайт обновится даже если GitHub в этот момент недоступен:
    ```
-   git remote add gitlab https://gitlab.com/<твой-логин>/kanban_board.git
-   git push origin main
    git push gitlab main
+   git push origin main
    ```
-3. В GitLab: **Settings → CI/CD → Variables** добавь `SUPABASE_PROXY_URL` с адресом Cloudflare Worker — он включит зеркало для сетей, где блокируется `supabase.co`.
+   Если GitHub не отвечает, вторая команда просто не выполнится — это не мешает запасному деплою.
+3. В GitLab: **Settings → CI/CD → Variables** добавь `SUPABASE_PROXY_URL` с адресом Cloudflare Worker — он включит зеркало для сетей, где блокируется `supabase.co`. Без этой переменной основной сайт работает, но `/mirror/` не будет.
 4. Дождись зелёного pipeline. Адрес приложения:
    ```
-   https://<твой-логин>.gitlab.io/kanban_board/
+   https://angelinakust.gitlab.io/kanban_board/
    ```
    Зеркало будет здесь:
    ```
-   https://<твой-логин>.gitlab.io/kanban_board/mirror/
+   https://angelinakust.gitlab.io/kanban_board/mirror/
    ```
 
-При необходимости GitLab можно сделать основным remote: пушить сначала туда, а в GitHub — когда он доступен.
+По умолчанию `main` по-прежнему отслеживает `origin` (GitHub), чтобы привычный `git push` работал как раньше. Для запасного деплоя используй `git push gitlab main`.
 
 ## 3. Запуск у себя (необязательно)
 
@@ -67,7 +67,7 @@ npm run dev
 
 ```
 https://angelok199751.github.io/kanban_board/mirror/
-https://<твой-логин>.gitlab.io/kanban_board/mirror/
+https://angelinakust.gitlab.io/kanban_board/mirror/
 ```
 
 Оно ходит в **тот же** Supabase через бесплатный Cloudflare Worker. Данные не
