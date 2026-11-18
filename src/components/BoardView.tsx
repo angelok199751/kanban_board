@@ -335,9 +335,11 @@ export function BoardView({ board, boards }: { board: Board; boards: Board[] }) 
     setDragOrder(null);
   }
 
-  /** Перенос из меню карточки: только внутри этой доски, в конец выбранной колонки. */
+  /** Перенос из меню карточки или из поля «Статус»: только внутри этой доски, в конец выбранной колонки. */
   function moveTaskToColumn(task: Task, columnId: string) {
-    if (columnId === task.column_id) return;
+    // карточка в окне может быть открыта давно: смотрим актуальную колонку в данных доски
+    const actual = taskById.get(task.id) ?? task;
+    if (columnId === actual.column_id) return;
     const orderedIds = [...(fullOrder[columnId] ?? []).filter((id) => id !== task.id), task.id];
     void actions.moveTask(board.id, task.id, columnId, orderedIds);
   }
@@ -591,10 +593,12 @@ export function BoardView({ board, boards }: { board: Board; boards: Board[] }) 
           <TaskDialog
             key={dialog.task.id}
             boardId={board.id}
-            task={dialog.task}
+            task={taskById.get(dialog.task.id) ?? dialog.task}
+            columns={columns}
             properties={activeProperties}
             options={options}
             values={Array.from(valuesByTask.get(dialog.task.id)?.values() ?? [])}
+            onStatusChange={(columnId) => moveTaskToColumn(dialog.task, columnId)}
             onClose={() => setDialog(null)}
           />
         </Suspense>

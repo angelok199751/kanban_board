@@ -13,6 +13,7 @@ export function PillSelect({
   disabled,
   label,
   multiple = false,
+  allowEmpty = true,
 }: {
   options: PropertyOption[];
   value: string | string[] | null;
@@ -20,6 +21,8 @@ export function PillSelect({
   disabled?: boolean;
   label: string;
   multiple?: boolean;
+  /** false: значение обязательно (например, статус), пункт «Не выбрано» не показывается. */
+  allowEmpty?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ left: number; width: number; top?: number; bottom?: number; maxHeight: number } | null>(null);
@@ -83,7 +86,7 @@ export function PillSelect({
 
   function pick(id: string | null) {
     setOpen(false);
-    if (id !== value) onChange(id);
+    if ((id !== null || allowEmpty) && id !== value) onChange(id);
     button.current?.focus();
   }
 
@@ -190,9 +193,11 @@ export function PillSelect({
             </>
           ) : (
             <>
-              <button type="button" role="option" aria-selected={value === null} className="pill-option" onClick={() => pick(null)}>
-                <span className="pill-empty">Не выбрано</span>
-              </button>
+              {allowEmpty && (
+                <button type="button" role="option" aria-selected={value === null} className="pill-option" onClick={() => pick(null)}>
+                  <span className="pill-empty">Не выбрано</span>
+                </button>
+              )}
               {options.map((o) => (
                 <button key={o.id} type="button" role="option" aria-selected={o.id === value} className="pill-option" onClick={() => pick(o.id)}>
                   <span className={`pill c-${o.color}`}>{o.label}</span>

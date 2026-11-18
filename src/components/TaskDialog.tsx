@@ -8,11 +8,12 @@ import { buildCardFields } from '../lib/cardFields';
 import { isHtmlEmpty, sanitizeHtml } from '../lib/sanitize';
 import { humanizeError } from '../lib/supabase';
 import { useStored } from '../lib/useStored';
-import type { Property, PropertyOption, Task, TaskFull, TaskValue } from '../lib/types';
+import type { Column, Property, PropertyOption, Task, TaskFull, TaskValue } from '../lib/types';
 import { ConfirmDialog } from './ConfirmDialog';
 import { Dialog } from './Dialog';
 import { LayoutSwitch, parseLayout } from './LayoutSwitch';
 import { Pill } from './TaskCard';
+import { PillSelect } from './PillSelect';
 import { PropertyField } from './PropertyField';
 import { RichTextEditor } from './RichTextEditor';
 
@@ -33,16 +34,20 @@ const DESCRIPTION_DELAY_MS = 1500;
 export function TaskDialog({
   boardId,
   task,
+  columns,
   properties,
   options,
   values,
+  onStatusChange,
   onClose,
 }: {
   boardId: string;
   task: Task;
+  columns: Column[];
   properties: Property[];
   options: PropertyOption[];
   values: TaskValue[];
+  onStatusChange: (columnId: string) => void;
   onClose: () => void;
 }) {
   const actions = useActions();
@@ -281,6 +286,16 @@ export function TaskDialog({
   const valueOf = (propertyId: string) => values.find((v) => v.property_id === propertyId);
   const ready = load.kind === 'ready';
 
+  // статус — это колонка доски: показываем её в свойствах и меняем тем же переносом, что и перетаскивание
+  const currentColumn = columns.find((c) => c.id === task.column_id);
+  const statusOptions: PropertyOption[] = columns.map((c) => ({
+    id: c.id,
+    property_id: '',
+    label: c.name,
+    color: c.color,
+    position: c.position,
+  }));
+
   // сводка заполненных свойств: видна в свёрнутой области, чтобы не разворачивать её ради беглого взгляда
   const optionById = new Map(options.map((o) => [o.id, o] as const));
   const summary = buildCardFields(properties, new Map(values.map((v) => [v.property_id, v] as const)), optionById);
@@ -336,6 +351,12 @@ export function TaskDialog({
             </span>
             <span className="props-title">Свойства</span>
             <span className="props-summary">
+              {currentColumn && (
+                <Pill
+                  key="status"
+                  field={{ id: 'status', name: 'Статус', type: 'select', text: currentColumn.name, tone: currentColumn.color }}
+                />
+              )}
               {summary.map((f) => (
                 <Pill key={f.id} field={f} />
               ))}
@@ -343,30 +364,45 @@ export function TaskDialog({
           </button>
           <div className="props-body">
             <div className="props-scroll">
-              {properties.length > 0 ? (
-                <div className="property-grid">
-                  {properties.map((p) => (
-                    <div key={p.id} className="property">
-                      <label>{p.name}</label>
-                      <div className="property-control">
-                        <PropertyField
-                          property={p}
-                          options={options}
-                          value={valueOf(p.id)}
-                          // сохранения идут по очереди: следующее использует версию значения, которую оставило предыдущее
-                          onSave={(raw, force) =>
-                            track(`p:${p.id}`, enqueue(() => actions.setTaskValue(boardId, task.id, p, raw, force)))
-                          }
-                          onDiscard={() => {
-                            failed.current.delete(`p:${p.id}`);
-                            refreshStatus();
-                          }}
-                        />
-                      </div>
-                    </div>
-                  ))}
+              <div className="property-grid">
+                <div className="property status-property">
+                  <label>Статус</label>
+                  <div className="property-control">
+                    <PillSelect
+                      label="Статус"
+                      options={statusOptions}
+                      value={task.column_id}
+                      allowEmpty={false}
+                      disabled={!ready || statusOptions.length === 0}
+                      onChange={(next) => {
+                        const columnId = Array.isArray(next) ? next[0] : next;
+                        if (columnId && columnId !== task.column_id) onStatusChange(columnId);
+                      }}
+                    />
+                  </div>
                 </div>
-              ) : (
+                {properties.map((p) => (
+                  <div key={p.id} className="property">
+                    <label>{p.name}</label>
+                    <div className="property-control">
+                      <PropertyField
+                        property={p}
+                        options={options}
+                        value={valueOf(p.id)}
+                        // сохранения идут по очереди: следующее использует версию значения, которую оставило предыдущее
+                        onSave={(raw, force) =>
+                          track(`p:${p.id}`, enqueue(() => actions.setTaskValue(boardId, task.id, p, raw, force)))
+                        }
+                        onDiscard={() => {
+                          failed.current.delete(`p:${p.id}`);
+                          refreshStatus();
+                        }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {properties.length === 0 && (
                 <p className="muted props-empty">Свойств пока нет. Их можно добавить кнопкой «⚙» над доской.</p>
               )}
             </div>
