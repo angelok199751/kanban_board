@@ -52,14 +52,21 @@ export function PillSelect({
         button.current?.focus();
       }
     };
+    // Скролл доски/окна уводит кнопку с места — меню закрывается.
+    // Скролл внутри самого списка не должен его закрывать.
+    const onScroll = (e: Event) => {
+      const target = e.target as Node | null;
+      if (target && menu.current?.contains(target)) return;
+      close();
+    };
     document.addEventListener('mousedown', onDown);
     window.addEventListener('keydown', onKey, true);
-    window.addEventListener('scroll', close, true);
+    window.addEventListener('scroll', onScroll, true);
     window.addEventListener('resize', close);
     return () => {
       document.removeEventListener('mousedown', onDown);
       window.removeEventListener('keydown', onKey, true);
-      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('scroll', onScroll, true);
       window.removeEventListener('resize', close);
     };
   }, [open]);
